@@ -44,7 +44,7 @@ def _load_scope(scope_id: int) -> ScopeRecord:
                        created_at=datetime.fromisoformat(row["created_at"]))
 
 
-def parse_httpx_output(output: str, scope: ScopeRecord) -> tuple[list[dict], int]:
+def parse_httpx_output(output: str, scope: ScopeRecord, require_approved: bool = False) -> tuple[list[dict], int]:
     results: dict[str, dict] = {}
     rejected = 0
     for line in output[:5_000_000].splitlines()[:50_000]:
@@ -58,6 +58,8 @@ def parse_httpx_output(output: str, scope: ScopeRecord) -> tuple[list[dict], int
             validate_url_in_scope(raw_url, scope, resolve=False)
             parsed = urlsplit(raw_url)
             hostname = normalize_domain(parsed.hostname or "")
+            if require_approved and not scope.local_lab_mode:
+                validate_real_network_access(scope, hostname, resolve=False)
             raw_ips = item.get("a") or []
             if isinstance(raw_ips, str):
                 raw_ips = [raw_ips]
@@ -109,6 +111,10 @@ def start_live_host_scan(scope_id: int, target_url: str | None = None) -> dict:
                 if not target_url:
                     raise ScopeError("Local Lab probes require an explicit loopback URL and approved port")
                 validate_real_network_access(scope, target_url, resolve=True)
+            elif target_url:
+                validate_url_in_scope(target_url, scope, resolve=False)
+                requested_host = urlsplit(target_url).hostname or ""
+                validate_real_network_access(scope, requested_host, resolve=True)
             else:
                 validate_real_network_access(scope, scope.root_domain, resolve=True)
     except ScopeError as exc:
@@ -146,10 +152,20 @@ def _run(scan_id: int, scope: ScopeRecord, adapter, cancel_event: threading.Even
             return
         with connect() as db:
             discovered = db.execute("SELECT hostname FROM discovered_subdomains WHERE scope_id = ? AND simulated = 0 ORDER BY hostname LIMIT 1000", (scope.id,)).fetchall()
-        targets = ([target_url] if scope.local_lab_mode and not simulated else
-                   sorted({scope.root_domain, *scope.included_assets, *(row["hostname"] for row in discovered)}))
-        targets = [validate_domain_in_scope(host, scope, resolve=False) if simulated else
-                   validate_real_network_access(scope, host, resolve=True) for host in targets]
+        public_requested_host = urlsplit(target_url).hostname if target_url and not scope.local_lab_mode else None
+        candidates = ([target_url] if scope.local_lab_mode and not simulated else
+                      [public_requested_host] if public_requested_host else
+                      sorted({scope.root_domain, *scope.included_assets, *(row["hostname"] for row in discovered)}))
+        targets = []
+        for host in candidates:
+            try:
+                targets.append(validate_domain_in_scope(host, scope, resolve=False) if simulated else
+                               validate_real_network_access(scope, host, resolve=True))
+            except ScopeError:
+                if host == scope.root_domain or scope.local_lab_mode or public_requested_host:
+                    raise
+                # Discovered and configured candidates are independently gated; skip candidates lacking approval.
+                continue
         _update(scan_id, stage="httpx_probe", progress=0)
         if simulated:
             candidates = [{"hostname": "mock." + scope.root_domain, "url": "https://mock." + scope.root_domain,
@@ -164,7 +180,7 @@ def _run(scan_id: int, scope: ScopeRecord, adapter, cancel_event: threading.Even
             if result.get("returncode") != 0:
                 raise RuntimeError("httpx process failed")
             _update(scan_id, stage="processing_results", progress=0)
-            candidates, _rejected = parse_httpx_output(result.get("stdout", ""), scope)
+            candidates, _rejected = parse_httpx_output(result.get("stdout", ""), scope, require_approved=True)
         if cancel_event.is_set():
             _update(scan_id, status="cancelled", stage="cancelled", finished_at=_now())
             return

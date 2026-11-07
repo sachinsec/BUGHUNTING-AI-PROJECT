@@ -1,4 +1,5 @@
 import ipaddress
+import json
 import re
 import socket
 from urllib.parse import urlsplit
@@ -93,23 +94,6 @@ def validate_domain_in_scope(domain: str, scope: ScopeRecord, resolve: bool = Tr
     return normalized
 
 
-def validate_real_network_access(scope: ScopeRecord, target: str, resolve: bool = True,
-                                allow_local_lab: bool = True) -> str:
-    """Require manual per-program review for public scans; lab mode is restricted to private lab targets."""
-    if not scope.authorization_confirmed:
-        raise ScopeError("Explicit authorization confirmation is required")
-    if scope.local_lab_mode:
-        if not allow_local_lab:
-            raise ScopeError("This external reconnaissance source is disabled for local lab scopes")
-        return validate_domain_in_scope(target, scope, resolve=resolve)
-    if (getattr(scope, "authorization_status", "unverified") != "verified"
-            or not getattr(scope, "authorization_verified_by", None)
-            or not getattr(scope, "authorization_verified_at", None)
-            or not getattr(scope, "authorization_reference", "")):
-        raise ScopeError("Public reconnaissance requires a separately reviewed program authorization")
-    return validate_domain_in_scope(target, scope, resolve=resolve)
-
-
 def validate_url_in_scope(url: str, scope: ScopeRecord, resolve: bool = True) -> str:
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
@@ -145,9 +129,37 @@ def validate_real_network_access(scope: ScopeRecord, target: str, resolve: bool 
         if target.startswith(("http://", "https://")):
             return validate_url_in_scope(target, scope, resolve=resolve)
         raise ScopeError("Local Lab network operations must use an explicit loopback URL and configured port")
-    if (getattr(scope, "authorization_status", "unverified") != "verified"
-            or not getattr(scope, "authorization_verified_by", None)
-            or not getattr(scope, "authorization_verified_at", None)
-            or not getattr(scope, "authorization_reference", "")):
-        raise ScopeError("Public reconnaissance requires a separately reviewed program authorization")
-    return validate_domain_in_scope(target, scope, resolve=resolve)
+    # Check syntax, scope membership, and exclusions before reporting review state;
+    # resolve DNS only after a matching approval has been found.
+    normalized = validate_domain_in_scope(target, scope, resolve=False)
+    from datetime import datetime, timezone
+    from app.core.database import connect
+    with connect() as db:
+        reviews = db.execute("SELECT * FROM authorization_reviews WHERE scope_id=? ORDER BY id DESC", (scope.id,)).fetchall()
+    if not reviews:
+        raise ScopeError("Authorization review is missing; public reconnaissance is blocked")
+    now = datetime.now(timezone.utc)
+    matching = []
+    for review in reviews:
+        asset = normalize_domain(review["authorized_asset"])
+        if normalized == asset or (review["allow_subdomains"] and normalized.endswith("." + asset)):
+            matching.append(review)
+    if not matching:
+        raise ScopeError("Target is outside the exact asset approved for public reconnaissance")
+
+    latest = matching[0]
+    review_exclusions = json.loads(latest["excluded_assets"] or "[]")
+    if any(normalized == item or normalized.endswith("." + item) for item in review_exclusions):
+        raise ScopeError("Target matches an authorization review exclusion")
+    if latest["status"] == "PENDING":
+        raise ScopeError("Authorization review is pending; public reconnaissance is blocked")
+    if latest["status"] == "REJECTED":
+        raise ScopeError("Authorization was rejected; public reconnaissance is blocked")
+    latest_expiry = datetime.fromisoformat(latest["expires_at"]) if latest["expires_at"] else None
+    if latest_expiry and latest_expiry.tzinfo is None:
+        latest_expiry = latest_expiry.replace(tzinfo=timezone.utc)
+    if latest["status"] == "EXPIRED" or (latest_expiry and latest_expiry <= now):
+        raise ScopeError("Authorization has expired; public reconnaissance is blocked")
+    if latest["status"] != "APPROVED":
+        raise ScopeError("Authorization review is not approved; public reconnaissance is blocked")
+    return validate_domain_in_scope(normalized, scope, resolve=resolve)

@@ -6,7 +6,8 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.core.database import connect
 from app.core.scope_manager import ScopeError, normalize_domain
-from app.models.scope import AuthorizationVerification, ScanModeUpdate, ScopeCreate, ScopeRecord
+from app.models.scope import (AuthorizationReviewCreate, AuthorizationReviewDecision,
+                              AuthorizationVerification, ScanModeUpdate, ScopeCreate, ScopeRecord)
 from app.core.runtime_settings import get_scan_mode, set_scan_mode
 from app.config import APP_ENV, APP_PROFILE, CURRENT_PLATFORM, HTTPX_EXECUTABLE, OLLAMA_BASE_URL, OLLAMA_MODEL
 from app.ai.ollama_client import ollama_health
@@ -16,15 +17,39 @@ router = APIRouter()
 
 
 def _record(row) -> ScopeRecord:
+    status_value = row["authorization_status"]
+    if not row["local_lab_mode"]:
+        with connect() as db:
+            review = db.execute("SELECT * FROM authorization_reviews WHERE scope_id=? ORDER BY id DESC LIMIT 1", (row["id"],)).fetchone()
+        status_value = review["status"] if review else "PENDING"
+        if review and review["status"] == "APPROVED" and review["expires_at"]:
+            expiry = datetime.fromisoformat(review["expires_at"])
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            if expiry <= datetime.now(timezone.utc):
+                status_value = "EXPIRED"
     return ScopeRecord(id=row["id"], root_domain=row["root_domain"], program_name=row["program_name"],
                        authorization_reference=row["authorization_reference"],
                        include_subdomains=bool(row["include_subdomains"]), included_assets=json.loads(row["included_assets"]),
                        local_lab_ports=json.loads(row["local_lab_ports"]),
                        excluded_subdomains=json.loads(row["excluded_subdomains"]), authorization_notes=row["authorization_notes"],
                        authorization_confirmed=bool(row["authorization_confirmed"]), local_lab_mode=bool(row["local_lab_mode"]),
-                       authorization_status=row["authorization_status"], authorization_verified_by=row["authorization_verified_by"],
+                       authorization_status=status_value, authorization_verified_by=row["authorization_verified_by"],
                        authorization_verified_at=datetime.fromisoformat(row["authorization_verified_at"]) if row["authorization_verified_at"] else None,
                        created_at=datetime.fromisoformat(row["created_at"]))
+
+
+def _authorization_review(row) -> dict:
+    review = dict(row)
+    review["allow_subdomains"] = bool(review["allow_subdomains"])
+    review["excluded_assets"] = json.loads(review.get("excluded_assets") or "[]")
+    if review["status"] == "APPROVED" and review["expires_at"]:
+        expiry = datetime.fromisoformat(review["expires_at"])
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if expiry <= datetime.now(timezone.utc):
+            review["status"] = "EXPIRED"
+    return review
 
 
 @router.get("/health")
@@ -94,23 +119,81 @@ def create_scope(payload: ScopeCreate):
 
 @router.post("/scopes/{scope_id}/verify-authorization", response_model=ScopeRecord)
 def verify_scope_authorization(scope_id: int, payload: AuthorizationVerification):
-    if not payload.verified:
-        raise HTTPException(status_code=400, detail="Manual authorization review was not confirmed")
+    # Kept as a compatibility route, but a single legacy verification request
+    # cannot create an approval. The full review API captures platform, exact
+    # asset, subdomain permission, exclusions, evidence, and a separate decision.
     with connect() as db:
         row = db.execute("SELECT * FROM scopes WHERE id = ?", (scope_id,)).fetchone()
-        if row is None:
+    if row is None:
+        raise HTTPException(status_code=404, detail="Scope not found")
+    if row["local_lab_mode"]:
+        raise HTTPException(status_code=400, detail="Local Lab scopes use explicit loopback host and port configuration")
+    raise HTTPException(status_code=409, detail=(
+        "Legacy authorization verification cannot approve public reconnaissance. "
+        "Submit complete evidence through POST /api/scopes/{scope_id}/authorization-reviews, "
+        "then record a separate reviewer decision through PUT /api/authorization-reviews/{review_id}."
+    ))
+
+
+@router.get("/scopes/{scope_id}/authorization-reviews")
+def list_authorization_reviews(scope_id: int):
+    with connect() as db:
+        if not db.execute("SELECT 1 FROM scopes WHERE id=?", (scope_id,)).fetchone():
             raise HTTPException(status_code=404, detail="Scope not found")
-        if row["local_lab_mode"]:
-            raise HTTPException(status_code=400, detail="Local lab scopes use local-only validation and cannot verify public authorization")
-        reference = payload.authorization_reference.strip() or row["authorization_reference"].strip()
-        parsed_reference = urlsplit(reference)
-        if parsed_reference.scheme not in {"https", "http"} or not parsed_reference.hostname or parsed_reference.username or parsed_reference.password:
-            raise HTTPException(status_code=422, detail="A program policy or authorization reference URL is required")
-        verified_at = datetime.now(timezone.utc).isoformat()
-        db.execute("UPDATE scopes SET authorization_reference = ?, authorization_status = 'verified', authorization_verified_by = ?, authorization_verified_at = ?, authorization_review_notes = ? WHERE id = ?",
-                   (reference, payload.verified_by.strip(), verified_at, payload.review_notes.strip(), scope_id))
-        row = db.execute("SELECT * FROM scopes WHERE id = ?", (scope_id,)).fetchone()
-    return _record(row)
+        rows = db.execute("SELECT * FROM authorization_reviews WHERE scope_id=? ORDER BY id DESC", (scope_id,)).fetchall()
+    return [_authorization_review(row) for row in rows]
+
+
+@router.post("/scopes/{scope_id}/authorization-reviews", status_code=201)
+def create_authorization_review(scope_id: int, payload: AuthorizationReviewCreate):
+    with connect() as db:
+        scope = db.execute("SELECT * FROM scopes WHERE id=?", (scope_id,)).fetchone()
+        if not scope:
+            raise HTTPException(status_code=404, detail="Scope not found")
+        if scope["local_lab_mode"]:
+            raise HTTPException(status_code=400, detail="Local Lab authorization is managed by its explicit host and port configuration")
+        try:
+            asset = normalize_domain(payload.authorized_asset)
+            excluded = sorted({normalize_domain(item) for item in payload.excluded_assets})
+        except ScopeError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        root = scope["root_domain"]
+        if any(item != root and not item.endswith("." + root) for item in [asset, *excluded]):
+            raise HTTPException(status_code=422, detail="Authorized and excluded assets must be within the registered root")
+        parsed = urlsplit(payload.policy_url)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise HTTPException(status_code=422, detail="A valid HTTPS program policy URL is required")
+        now = datetime.now(timezone.utc).isoformat()
+        expires_at = payload.expires_at
+        if expires_at and expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        if expires_at and expires_at <= datetime.now(timezone.utc):
+            raise HTTPException(status_code=422, detail="Authorization expiration must be in the future")
+        cursor = db.execute("INSERT INTO authorization_reviews(scope_id,status,program_name,platform_name,authorized_asset,allow_subdomains,policy_url,excluded_assets,evidence_notes,expires_at,created_at) VALUES (?, 'PENDING', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            (scope_id, payload.program_name.strip(), payload.platform_name.strip(), asset, int(payload.allow_subdomains), payload.policy_url.strip(),
+                             json.dumps(excluded), payload.evidence_notes.strip(), expires_at.isoformat() if expires_at else None, now))
+        return _authorization_review(db.execute("SELECT * FROM authorization_reviews WHERE id=?", (cursor.lastrowid,)).fetchone())
+
+
+@router.put("/authorization-reviews/{review_id}")
+def decide_authorization_review(review_id: int, payload: AuthorizationReviewDecision):
+    decision = payload.status.upper()
+    if decision not in {"APPROVED", "REJECTED", "EXPIRED"}:
+        raise HTTPException(status_code=422, detail="Decision must be APPROVED, REJECTED, or EXPIRED")
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as db:
+        row = db.execute("SELECT * FROM authorization_reviews WHERE id=?", (review_id,)).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Authorization review not found")
+        if decision == "APPROVED" and row["expires_at"]:
+            expiry = datetime.fromisoformat(row["expires_at"])
+            if expiry.tzinfo is None:
+                expiry = expiry.replace(tzinfo=timezone.utc)
+            if expiry <= datetime.now(timezone.utc):
+                raise HTTPException(status_code=422, detail="Expired evidence cannot be approved")
+        db.execute("UPDATE authorization_reviews SET status=?, reviewer=?, decision=?, reviewed_at=? WHERE id=?",
+                   (decision, payload.reviewer.strip(), payload.decision.strip(), now, review_id))
+        return _authorization_review(db.execute("SELECT * FROM authorization_reviews WHERE id=?", (review_id,)).fetchone())
 
 
 @router.get("/settings")

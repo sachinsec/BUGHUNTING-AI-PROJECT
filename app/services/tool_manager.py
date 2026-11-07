@@ -1,7 +1,7 @@
 import time
 import re
 
-from app.config import HTTPX_EXECUTABLE, SCAN_TIMEOUT, TOOL_EXECUTABLES
+from app.config import SCAN_TIMEOUT, TOOL_EXECUTABLES
 from app.core.scope_manager import validate_domain_in_scope, validate_real_network_access
 from app.core.runtime_settings import get_scan_mode
 
@@ -216,27 +216,49 @@ class HttpxAdapter(SubprocessToolAdapter):
     def detect(self) -> dict:
         import shutil
         import subprocess
+        import os
 
-        candidates = list(dict.fromkeys([HTTPX_EXECUTABLE, "httpx-toolkit", "httpx"]))
-        for candidate in candidates:
-            if not candidate:
-                continue
+        configured = self.executable
+        candidate = configured
+        if not candidate:
+            return {"name": self.name, "available": False, "status": "NOT_INSTALLED", "mode": "real",
+                    "version": None, "error": "HTTPX_EXECUTABLE is empty.",
+                    "install_hint": "Set HTTPX_EXECUTABLE to the ProjectDiscovery executable name or full path, for example httpx-toolkit."}
+        binary = shutil.which(candidate)
+        basename = configured.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+        if not binary and basename in {"httpx-toolkit", "httpx-toolkit.exe"}:
+            # The fallback is accepted only after ProjectDiscovery's own banner is verified below.
+            candidate = "httpx"
             binary = shutil.which(candidate)
-            if not binary:
-                continue
-            try:
-                result = subprocess.run([binary, "-version"], capture_output=True, text=True,
-                                        timeout=min(self.timeout, 10), check=False, shell=False)
-                version = (result.stdout or result.stderr).strip().splitlines()[0][:200]
-            except (OSError, subprocess.TimeoutExpired, IndexError):
-                continue
-            if re.search(r"\bhttpx(?:\s+version)?\s+v?\d+\.\d+", version, re.I):
-                self.executable = candidate
-                self._resolved_path = binary
-                return {"name": self.name, "available": True, "status": "INSTALLED", "mode": "real", "version": version, "path": binary,
-                        "command": candidate}
-        return {"name": self.name, "available": False, "status": "NOT_INSTALLED", "mode": "real", "version": None,
-                "install_hint": f"ProjectDiscovery httpx was not detected. Configure HTTPX_EXECUTABLE (currently {HTTPX_EXECUTABLE or 'auto'}) to httpx-toolkit or the ProjectDiscovery httpx binary."}
+        if not binary:
+            return {"name": self.name, "available": False, "status": "NOT_INSTALLED", "mode": "real",
+                    "version": None, "command": configured,
+                    "error": f"Configured HTTPX executable '{configured}' was not found on PATH.",
+                    "install_hint": f"Install ProjectDiscovery httpx or set HTTPX_EXECUTABLE to its executable name or full path (current: {configured})."}
+        try:
+            result = subprocess.run([binary, "-version"], capture_output=True, text=True,
+                                    timeout=min(self.timeout, 10), check=False, shell=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"name": self.name, "available": False, "status": "ERROR", "mode": "real",
+                    "version": None, "path": binary, "command": candidate,
+                    "error": f"Configured executable could not be verified: {type(exc).__name__}.",
+                    "install_hint": "Check HTTPX_EXECUTABLE and confirm the binary can run with -version."}
+        banner = f"{result.stdout or ''}\n{result.stderr or ''}"
+        version_match = re.search(
+            r"(?:current\s+)?(?:httpx\s+)?version\s*:?\s*(?P<version>v?\d+\.\d+(?:\.\d+)?(?:[-\w.]*)?)",
+            banner, re.I,
+        )
+        is_projectdiscovery = "projectdiscovery.io" in banner.lower() or "github.com/projectdiscovery/httpx" in banner.lower()
+        if result.returncode != 0 or not version_match or not is_projectdiscovery:
+            return {"name": self.name, "available": False, "status": "ERROR", "mode": "real",
+                    "version": None, "path": binary, "command": candidate, "executable_name": os.path.basename(binary),
+                    "error": "The configured binary did not identify itself as ProjectDiscovery httpx.",
+                    "install_hint": "Set HTTPX_EXECUTABLE to the verified ProjectDiscovery httpx/httpx-toolkit binary; unrelated tools named httpx are rejected."}
+        self._resolved_path = binary
+        self.executable = candidate
+        version = version_match.group("version")
+        return {"name": self.name, "available": True, "status": "INSTALLED", "mode": "real",
+                "version": version, "path": binary, "command": candidate, "executable_name": os.path.basename(binary)}
 
     def version_arguments(self) -> list[str]:
         return [self.executable, "-version"]
@@ -323,8 +345,11 @@ class KatanaAdapter(SubprocessToolAdapter):
         super().__init__(TOOL_EXECUTABLES["katana"], "Katana")
 
     def arguments(self, target: str) -> list[str]:
+        from urllib.parse import urlsplit
+        hostname = urlsplit(target if "://" in target else "https://" + target).hostname or target
+        host_scope = rf"^https?://{re.escape(hostname)}(?::\d+)?(?:/|$)"
         args = [self.executable, "-u", "https://" + target, "-jsonl", "-silent", "-omit-raw", "-omit-body",
-                "-fs", "fqdn", "-d", "2", "-ct", "2m", "-timeout", "10",
+                "-fs", "fqdn", "-cs", host_scope, "-dr", "-d", "2", "-ct", "2m", "-timeout", "10",
                 "-retry", "1", "-c", "1", "-p", "1", "-rl", "2", "-duc"]
         if not getattr(self, "_local_lab_execution", False):
             args.extend(["-exclude", "private-ips"])
@@ -354,7 +379,7 @@ class NucleiAdapter(SubprocessToolAdapter):
 
     def arguments(self, target: str) -> list[str]:
         return [self.executable, "-u", "https://" + target, "-jsonl", "-rl", "2",
-                "-severity", "info,low,medium,high,critical"]
+                "-dr", "-severity", "info,low,medium,high,critical"]
 
     def version_arguments(self) -> list[str]:
         return [self.executable, "-version"]

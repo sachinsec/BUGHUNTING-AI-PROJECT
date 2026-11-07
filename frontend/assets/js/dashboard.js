@@ -8,6 +8,7 @@
     overview: ["Overview", "Overview", "Your authorized programs and attack surface at a glance."],
     programs: ["Programs", "Programs", "Register authorized targets and keep scope boundaries explicit."],
     "scope-manager": ["Scope Manager", "Scope Manager", "Review authorization boundaries and exclusions."],
+    "authorization-reviews": ["Authorization Reviews", "Authorization Reviews", "Evidence review and explicit decisions for public program scope."],
     reconnaissance: ["Reconnaissance", "Reconnaissance", "Recon stages will appear here when scan APIs are available."],
     subdomains: ["Subdomains", "Subdomains", "Discovered subdomains from completed scans."],
     "live-hosts": ["Live Hosts", "Live Hosts", "Live host results from authorized scans."],
@@ -61,7 +62,7 @@
       <div class="program-row">
         <span class="program-mark">${escapeText((scope.program_name || scope.root_domain).slice(0, 1).toUpperCase())}</span>
         <span class="program-name"><strong>${escapeText(scope.program_name || scope.root_domain)}</strong><small>${escapeText(scope.root_domain)}</small></span>
-        <span class="scope-badge${scope.local_lab_mode ? " lab" : ""}">${scope.local_lab_mode ? "LAB MODE" : "AUTHORIZED"}</span>
+        <span class="scope-badge${scope.local_lab_mode ? " lab" : ""}">${scope.local_lab_mode ? "LAB MODE" : escapeText(scope.authorization_status || "PENDING")}</span>
       </div>`).join("");
   }
 
@@ -94,6 +95,25 @@
     </div>`).join("");
   }
 
+  async function loadDashboardVulnerabilityStats() {
+    try {
+      const stats = await BugHunterApi.vulnerabilityStats();
+      byId("metric-potential-findings").textContent = stats.potential;
+      byId("metric-verified-findings").textContent = stats.verified;
+      byId("severity-total").innerHTML = `${stats.real_total}<small>REAL FINDINGS</small>`;
+      byId("finding-stats-mode").textContent = `${stats.simulated} SIMULATED`;
+      const breakdown = Object.entries(stats.by_severity || {}).filter(([, count]) => count).map(([severity, count]) => `${severity}: ${count}`).join(" · ");
+      const simulatedBreakdown = Object.entries(stats.simulated_by_severity || {}).filter(([, count]) => count).map(([severity, count]) => `${severity}: ${count}`).join(" · ");
+      byId("severity-summary").textContent = stats.total ? `Real: ${breakdown || "no findings"}. Simulated: ${simulatedBreakdown || "none"}.` : "No persisted findings yet.";
+    } catch (error) {
+      byId("metric-potential-findings").textContent = "ERROR";
+      byId("metric-verified-findings").textContent = "ERROR";
+      byId("severity-total").innerHTML = `—<small>ERROR</small>`;
+      byId("finding-stats-mode").textContent = "API ERROR";
+      byId("severity-summary").textContent = `Could not load vulnerability statistics: ${error.message}`;
+    }
+  }
+
   function renderTargets() {
     const query = byId("target-search").value.trim().toLowerCase();
     const filtered = state.scopes.filter((scope) => `${scope.program_name} ${scope.root_domain} ${scope.included_assets.join(" ")}`.toLowerCase().includes(query));
@@ -111,13 +131,13 @@
     byId("target-empty").classList.add("hidden");
     body.innerHTML = filtered.map((scope) => {
       const assets = scope.included_assets.length + (scope.include_subdomains ? 1 : 0);
-      const auth = scope.local_lab_mode ? '<span class="mode-pill lab">LOCAL ONLY</span>' : (scope.authorization_status === "verified" ? '<span class="real-badge">VERIFIED</span>' : `<button class="button button-secondary button-small" data-verify-scope="${scope.id}">Review authorization</button>`);
+      const auth = scope.local_lab_mode ? '<span class="mode-pill lab">LOCAL ONLY</span>' : `<span class="mode-pill">${escapeText(scope.authorization_status || "PENDING")}</span>`;
       return `<tr>
         <td><div class="table-program"><span class="program-mark">${escapeText((scope.program_name || scope.root_domain).slice(0, 1).toUpperCase())}</span><span><strong>${escapeText(scope.program_name || scope.root_domain)}</strong><small>${escapeText(scope.root_domain)}</small></span></div></td>
         <td><span class="asset-count">${assets}<small> ${scope.include_subdomains ? "incl. subdomains" : "explicit assets"}</small></span></td>
         <td><span class="asset-count">${scope.excluded_subdomains.length}</span></td>
         <td><span class="mode-pill${scope.local_lab_mode ? " lab" : ""}">${scope.local_lab_mode ? "LOCAL LAB" : "AUTHORIZED"}</span></td>
-        <td>${auth}<small class="table-subline">${dateLabel(scope.created_at)}</small></td>
+        <td>${auth}${scope.local_lab_mode ? "" : `<button class="text-button table-subline" data-open-authorization="${scope.id}">Manage review</button>`}<small class="table-subline">${dateLabel(scope.created_at)}</small></td>
         <td><div class="row-actions"><button class="delete-button" data-delete-scope="${scope.id}" aria-label="Delete ${escapeText(scope.program_name || scope.root_domain)}" title="Remove scope">×</button></div></td>
       </tr>`;
     }).join("");
@@ -129,10 +149,130 @@
     const load = async (check = false) => {
       const data = check ? await BugHunterApi.checkTools() : await BugHunterApi.toolStatus();
       const rows = data.tools || [];
-      byId("tool-status-body").innerHTML = rows.map((tool) => `<tr><td>${escapeText(tool.name)}</td><td><span class="${tool.status === "INSTALLED" ? "real-badge" : tool.status === "MOCK" ? "simulation-badge" : "mode-pill"}">${escapeText(tool.status || (tool.available ? "INSTALLED" : "NOT_INSTALLED"))}</span></td><td>${escapeText((tool.mode || data.execution_mode).toUpperCase())}</td><td>${escapeText(tool.version || "—")}</td><td class="hostname-cell">${escapeText(tool.path || tool.install_hint || "—")}</td></tr>`).join("");
+      byId("tool-status-body").innerHTML = rows.map((tool) => `<tr><td>${escapeText(tool.command || tool.name)}${tool.command ? `<small class="table-subline">${escapeText(tool.name)}</small>` : ""}</td><td><span class="${tool.status === "INSTALLED" ? "real-badge" : tool.status === "MOCK" ? "simulation-badge" : "mode-pill"}">${escapeText(tool.status || (tool.available ? "INSTALLED" : "NOT_INSTALLED"))}</span></td><td>${escapeText((tool.mode || data.execution_mode).toUpperCase())}</td><td>${escapeText(tool.version || "—")}</td><td class="hostname-cell">${escapeText(tool.path || tool.install_hint || tool.error || "—")}</td></tr>`).join("");
     };
     byId("tool-check").addEventListener("click", () => load(true).catch((error) => toast(error.message, true)));
     try { await load(); } catch (error) { content.insertAdjacentHTML("beforeend", `<p class="recon-alert error">${escapeText(error.message)}</p>`); }
+  }
+
+  function findingStatusLabel(finding) {
+    if (finding.simulated) return `${finding.status} · SIMULATED ${finding.execution_mode}`;
+    return `${finding.status} · MANUAL ${finding.execution_mode}`;
+  }
+
+  function findingRows(findings) {
+    if (!findings.length) return '<tr><td colspan="6" class="table-loading">No findings match these filters.</td></tr>';
+    return findings.map((finding) => `<tr data-open-finding="${finding.id}" tabindex="0" role="button"><td>${escapeText(finding.title)}</td><td>${escapeText(finding.target)}</td><td>${escapeText(finding.severity)}</td><td>${escapeText(finding.status)}</td><td><span class="${finding.simulated ? "simulation-badge" : "real-badge"}">${escapeText(findingStatusLabel(finding))}</span></td><td>${dateLabel(finding.updated_at)}</td></tr>`).join("");
+  }
+
+  async function loadFindingList() {
+    const container = byId("placeholder-content");
+    const body = byId("finding-table-body");
+    if (!body) return;
+    body.innerHTML = '<tr><td colspan="6" class="table-loading">Loading findings from SQLite…</td></tr>';
+    const filters = {
+      severity: byId("finding-filter-severity").value,
+      status: byId("finding-filter-status").value,
+      target: byId("finding-filter-target").value.trim(),
+    };
+    try {
+      const findings = await BugHunterApi.vulnerabilities(filters);
+      body.innerHTML = findingRows(findings);
+      byId("finding-count").textContent = `${findings.length} FINDING${findings.length === 1 ? "" : "S"}`;
+      if (!findings.length) byId("finding-details").innerHTML = '<div class="history-empty">No persisted findings match your filters.</div>';
+    } catch (error) {
+      body.innerHTML = `<tr><td colspan="6" class="table-loading">Could not load findings: ${escapeText(error.message)}</td></tr>`;
+      byId("finding-count").textContent = "API ERROR";
+    }
+  }
+
+  async function showFindingDetails(id) {
+    const detail = byId("finding-details");
+    detail.innerHTML = '<div class="loading-line"><span></span>Loading finding evidence…</div>';
+    try {
+      const finding = await BugHunterApi.vulnerability(id);
+      const statuses = ["POTENTIAL", "VERIFIED", "FALSE_POSITIVE", "RESOLVED"];
+      detail.innerHTML = `<div class="panel-heading"><div><div class="panel-kicker">FINDING #${finding.id} · ${escapeText(finding.severity)}</div><h2>${escapeText(finding.title)}</h2></div><span class="${finding.simulated ? "simulation-badge" : "real-badge"}">${escapeText(findingStatusLabel(finding))}</span></div><div class="finding-detail-copy"><p><strong>Target:</strong> ${escapeText(finding.target)}</p><p>${escapeText(finding.description || "No description recorded.")}</p><p><strong>Source:</strong> ${escapeText(finding.source)} · <strong>Created:</strong> ${dateLabel(finding.created_at)}</p><h3>Evidence</h3><pre>${escapeText(JSON.stringify(finding.evidence, null, 2))}</pre>${finding.reviewer ? `<p><strong>Reviewer:</strong> ${escapeText(finding.reviewer)}</p>` : ""}${finding.reviewer_notes ? `<p>${escapeText(finding.reviewer_notes)}</p>` : ""}<form id="finding-status-form" data-finding-id="${finding.id}" class="review-form"><div class="form-row"><label class="field-label" for="finding-new-status">Update status</label><select name="status" id="finding-new-status">${statuses.map((status) => `<option ${status === finding.status ? "selected" : ""}>${status}</option>`).join("")}</select></div><div class="form-row"><label class="field-label" for="finding-reviewer">Reviewer name (required for verification)</label><input name="reviewer" id="finding-reviewer" maxlength="120" value="${escapeText(finding.reviewer || "")}"></div><div class="form-row"><label class="field-label" for="finding-review-notes">Reviewer notes</label><textarea name="reviewer_notes" id="finding-review-notes" rows="2" maxlength="4000">${escapeText(finding.reviewer_notes || "")}</textarea></div><button class="button button-secondary" type="submit">Save finding status</button></form></div>`;
+    } catch (error) {
+      detail.innerHTML = `<p class="form-error">Could not load finding details: ${escapeText(error.message)}</p>`;
+    }
+  }
+
+  async function renderFindingsManagement() {
+    byId("placeholder-fallback").classList.add("hidden");
+    const scopeOptions = state.scopes.map((scope) => `<option value="${scope.id}">${escapeText(scope.program_name || scope.root_domain)} · ${escapeText(scope.root_domain)}</option>`).join("");
+    byId("placeholder-content").innerHTML = `<div class="scope-notice"><span class="notice-icon">⚑</span><div><strong>Finding records are persisted by the FastAPI service.</strong><p>Potential, verified, simulated, and manual provenance are kept distinct.</p></div><span class="notice-lock">SQLITE</span></div><div class="lower-grid"><article class="panel"><div class="panel-heading"><div><div class="panel-kicker">FINDING RECORD</div><h2>Add a finding</h2></div></div><form id="finding-create-form" class="review-form"><div class="form-row"><label class="field-label" for="finding-title">Title</label><input name="title" id="finding-title" required maxlength="250"></div><div class="form-row"><label class="field-label" for="finding-target">Target</label><input name="target" id="finding-target" required maxlength="2048" placeholder="host or URL"></div><div class="form-row"><label class="field-label" for="finding-severity">Severity</label><select name="severity" id="finding-severity"><option>INFO</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option><option>CRITICAL</option></select></div><div class="form-row"><label class="field-label" for="finding-scope">Associated scope <span>OPTIONAL</span></label><select name="scope_id" id="finding-scope"><option value="">No scope link</option>${scopeOptions}</select></div><div class="form-row"><label class="field-label" for="finding-description">Description</label><textarea name="description" id="finding-description" rows="3" maxlength="8000"></textarea></div><div class="form-row"><label class="field-label" for="finding-evidence">Evidence JSON</label><textarea name="evidence" id="finding-evidence" rows="4" placeholder='{"request":"…","response":"…"}'></textarea></div><div id="finding-create-error" class="form-error hidden" role="alert"></div><button class="button button-primary" type="submit">Save potential finding</button></form></article><article class="panel"><div class="panel-heading"><div><div class="panel-kicker">SQLITE FINDINGS</div><h2>Findings</h2></div><button class="text-button" id="finding-refresh">Refresh</button></div><div class="table-toolbar"><select id="finding-filter-severity"><option value="">All severities</option><option>INFO</option><option>LOW</option><option>MEDIUM</option><option>HIGH</option><option>CRITICAL</option></select><select id="finding-filter-status"><option value="">All statuses</option><option>POTENTIAL</option><option>VERIFIED</option><option>FALSE_POSITIVE</option><option>RESOLVED</option></select><input id="finding-filter-target" type="search" placeholder="Filter target"><span class="table-count" id="finding-count">Loading…</span></div><div class="table-scroll"><table><thead><tr><th>FINDING</th><th>TARGET</th><th>SEVERITY</th><th>STATUS</th><th>ORIGIN</th><th>UPDATED</th></tr></thead><tbody id="finding-table-body"><tr><td colspan="6" class="table-loading">Loading findings…</td></tr></tbody></table></div></article></div><article class="panel finding-detail-panel" id="finding-details"><div class="history-empty">Select a finding to inspect details and evidence.</div></article>`;
+    const root = byId("placeholder-content");
+    root.querySelector("#finding-create-form").addEventListener("submit", createFindingFromForm);
+    root.querySelector("#finding-refresh").addEventListener("click", loadFindingList);
+    root.querySelector("#finding-filter-severity").addEventListener("change", loadFindingList);
+    root.querySelector("#finding-filter-status").addEventListener("change", loadFindingList);
+    root.querySelector("#finding-filter-target").addEventListener("input", debounce(loadFindingList, 250));
+    root.querySelector("#finding-table-body").addEventListener("click", (event) => {
+      const row = event.target.closest("[data-open-finding]");
+      if (row) showFindingDetails(row.dataset.openFinding);
+    });
+    root.addEventListener("submit", (event) => {
+      if (event.target.id === "finding-status-form") updateFindingFromForm(event);
+    });
+    await loadFindingList();
+  }
+
+  async function createFindingFromForm(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const values = new FormData(form);
+    const errorEl = byId("finding-create-error");
+    errorEl.classList.add("hidden");
+    let evidence = {};
+    try { evidence = values.get("evidence").trim() ? JSON.parse(values.get("evidence")) : {}; }
+    catch (_) { errorEl.textContent = "Evidence must be valid JSON."; errorEl.classList.remove("hidden"); return; }
+    try {
+      const created = await BugHunterApi.createVulnerability({
+        title: values.get("title").trim(), target: values.get("target").trim(), severity: values.get("severity"),
+        scope_id: values.get("scope_id") ? Number(values.get("scope_id")) : null,
+        description: values.get("description").trim(), evidence,
+      });
+      toast(created.simulated ? "Finding stored as a simulated MOCK record." : "Potential finding saved to SQLite.");
+      form.reset();
+      await Promise.all([loadFindingList(), loadDashboardVulnerabilityStats()]);
+    } catch (error) { errorEl.textContent = error.message; errorEl.classList.remove("hidden"); }
+  }
+
+  async function updateFindingFromForm(event) {
+    event.preventDefault();
+    const form = event.target;
+    const values = new FormData(form);
+    try {
+      const updated = await BugHunterApi.updateVulnerability(form.dataset.findingId, {
+        status: values.get("status"), reviewer: values.get("reviewer").trim() || null,
+        reviewer_notes: values.get("reviewer_notes").trim(),
+      });
+      toast(updated.simulated ? "Simulated finding status updated; provenance remains simulated." : "Finding status updated.");
+      await Promise.all([loadFindingList(), loadDashboardVulnerabilityStats(), showFindingDetails(updated.id)]);
+    } catch (error) { toast(error.message, true); }
+  }
+
+  function debounce(callback, delay) {
+    let timer;
+    return (...args) => { window.clearTimeout(timer); timer = window.setTimeout(() => callback(...args), delay); };
+  }
+
+  async function renderVulnerabilityScanner() {
+    byId("placeholder-fallback").classList.add("hidden");
+    byId("placeholder-content").innerHTML = '<div class="loading-line"><span></span>Loading scanner and finding status from the API…</div>';
+    try {
+      const [toolState, stats] = await Promise.all([BugHunterApi.toolStatus(), BugHunterApi.vulnerabilityStats()]);
+      const nuclei = (toolState.tools || []).find((tool) => String(tool.name).toLowerCase() === "nuclei") || null;
+      const mock = toolState.execution_mode === "mock" || nuclei?.simulated;
+      const toolLabel = mock ? "MOCK ADAPTER" : nuclei?.available ? "AVAILABLE" : escapeText(nuclei?.status || "UNKNOWN");
+      const executable = mock ? "No scanner binary is executed in MOCK mode." : (nuclei?.path || nuclei?.install_hint || "Not configured");
+      byId("placeholder-content").innerHTML = `<div class="dashboard-grid"><article class="panel"><div class="panel-heading"><div><div class="panel-kicker">VULNERABILITY ENGINE</div><h2>Nuclei executable status</h2></div><span class="${mock ? "simulation-badge" : nuclei?.available ? "real-badge" : "mode-pill"}">${toolLabel}</span></div><div class="finding-detail-copy"><p><strong>Execution mode:</strong> ${escapeText((toolState.execution_mode || "unknown").toUpperCase())}</p><p><strong>Executable:</strong> ${escapeText(executable)}</p><p><strong>Version:</strong> ${escapeText(nuclei?.version || "Unavailable")}</p><p>${escapeText(nuclei?.error || nuclei?.install_hint || (mock ? "Mock adapter only; it does not produce real scanner findings." : "Tool status came from the local backend."))}</p><div class="scope-notice"><div><strong>No scan has been launched by this status check.</strong><p>This page reads the tool and finding APIs. Active scanning remains gated by approved authorization and explicit scan consent.</p></div></div><button class="button button-primary" data-open-findings>Open Findings</button></div></article><article class="panel"><div class="panel-heading"><div><div class="panel-kicker">PERSISTED FINDINGS</div><h2>Live statistics</h2></div></div><div class="finding-detail-copy"><p>Total: <strong>${stats.total}</strong></p><p>Potential real: <strong>${stats.potential}</strong></p><p>Manually verified real: <strong>${stats.verified}</strong></p><p>Simulated: <strong>${stats.simulated}</strong></p></div></article></div>`;
+      byId("placeholder-content").querySelector("[data-open-findings]").addEventListener("click", () => navigate("findings"));
+    } catch (error) {
+      byId("placeholder-content").innerHTML = `<article class="panel"><p class="form-error">Could not load vulnerability APIs: ${escapeText(error.message)}</p><button class="button button-secondary" id="retry-vulnerability-scanner">Retry</button></article>`;
+      byId("retry-vulnerability-scanner").addEventListener("click", renderVulnerabilityScanner);
+    }
   }
 
   async function renderSettings() {
@@ -150,18 +290,84 @@
     } catch (error) { byId("settings-details").textContent = `Settings unavailable: ${error.message}`; }
   }
 
-  async function reviewAuthorization(id) {
-    const scope = state.scopes.find((item) => String(item.id) === String(id));
-    if (!scope || scope.local_lab_mode) return;
-    const verifiedBy = window.prompt("Reviewer name (required):");
-    if (!verifiedBy) return;
-    const reviewNotes = window.prompt("Record how you verified the program policy and permitted assets (required):");
-    if (!reviewNotes || reviewNotes.trim().length < 10) { toast("Review notes must contain at least 10 characters.", true); return; }
-    if (!window.confirm(`Confirm that ${scope.root_domain} is currently authorized for testing under the recorded program policy?`)) return;
+  function selectedReviewScope() {
+    return state.scopes.find((scope) => String(scope.id) === String(byId("review-scope")?.value));
+  }
+
+  function populateReviewFormFromScope() {
+    const scope = selectedReviewScope();
+    if (!scope) return;
+    byId("review-program").value = scope.program_name || "";
+    byId("review-asset").value = scope.root_domain;
+    byId("review-exclusions").value = (scope.excluded_subdomains || []).join("\n");
+    loadAuthorizationReviews();
+  }
+
+  async function renderAuthorizationView() {
+    const select = byId("review-scope");
+    const previous = select.value;
+    const publicScopes = state.scopes.filter((scope) => !scope.local_lab_mode);
+    select.innerHTML = publicScopes.map((scope) => `<option value="${scope.id}">${escapeText(scope.program_name || scope.root_domain)} · ${escapeText(scope.root_domain)}</option>`).join("") || '<option value="">No public scopes are registered</option>';
+    select.value = publicScopes.some((scope) => String(scope.id) === previous) ? previous : (publicScopes[0]?.id ?? "");
+    populateReviewFormFromScope();
+    if (!publicScopes.length) byId("authorization-review-list").innerHTML = '<div class="history-empty">Register a public scope before requesting an authorization review. Local Lab scopes do not use public review records.</div>';
+  }
+
+  async function loadAuthorizationReviews() {
+    const scope = selectedReviewScope();
+    const container = byId("authorization-review-list");
+    if (!scope) return;
+    container.innerHTML = '<div class="loading-line"><span></span>Loading review evidence…</div>';
     try {
-      await BugHunterApi.verifyAuthorization(id, { verified: true, verified_by: verifiedBy, review_notes: reviewNotes });
-      toast("Authorization review recorded.");
-      await refreshScopes();
+      const reviews = await BugHunterApi.authorizationReviews(scope.id);
+      if (!reviews.length) {
+        container.innerHTML = '<div class="history-empty">No reviews yet. Submit scope evidence to create a PENDING review.</div>';
+        return;
+      }
+      container.innerHTML = reviews.map((review) => {
+        const expired = review.status === "APPROVED" && review.expires_at && new Date(review.expires_at) <= new Date();
+        const status = expired ? "EXPIRED" : review.status;
+        const excluded = Array.isArray(review.excluded_assets) ? review.excluded_assets : JSON.parse(review.excluded_assets || "[]");
+        return `<article class="authorization-review-card"><div class="panel-heading"><div><div class="panel-kicker">REVIEW #${review.id} · ${escapeText(review.platform_name || "Platform unspecified")}</div><h2>${escapeText(review.program_name)} · ${escapeText(review.authorized_asset)}</h2></div><span class="mode-pill">${status}</span></div><div class="finding-detail-copy"><p><strong>Subdomains:</strong> ${review.allow_subdomains ? "Allowed by this review" : "Not allowed"}</p><p><strong>Policy:</strong> <a href="${escapeText(review.policy_url)}" target="_blank" rel="noopener noreferrer">${escapeText(review.policy_url)}</a></p><p><strong>Exclusions:</strong> ${escapeText(excluded.join(", ") || "None recorded")}</p><p><strong>Evidence:</strong> ${escapeText(review.evidence_notes || "No reviewer notes supplied.")}</p><p><strong>Submitted:</strong> ${dateLabel(review.created_at)} · <strong>Expires:</strong> ${review.expires_at ? dateLabel(review.expires_at) : "No expiration"}</p>${review.reviewed_at ? `<p><strong>Reviewed:</strong> ${dateLabel(review.reviewed_at)} by ${escapeText(review.reviewer || "Unknown reviewer")}</p><p><strong>Decision:</strong> ${escapeText(review.decision || "")}</p>` : ""}${status === "PENDING" ? `<div class="review-decision" data-review-id="${review.id}"><input class="reviewer-name" maxlength="120" placeholder="Reviewer name"><input class="reviewer-decision" maxlength="2000" placeholder="Decision notes"><button class="button button-secondary button-small" data-review-decision="APPROVED">Approve</button><button class="button button-secondary button-small" data-review-decision="REJECTED">Reject</button></div>` : ""}</div></article>`;
+      }).join("");
+    } catch (error) {
+      container.innerHTML = `<div class="form-error">Could not load authorization reviews: ${escapeText(error.message)}</div>`;
+    }
+  }
+
+  async function submitAuthorizationReview(event) {
+    event.preventDefault();
+    const scope = selectedReviewScope();
+    if (!scope) return;
+    const errorEl = byId("authorization-form-error");
+    errorEl.classList.add("hidden");
+    const expiryValue = byId("review-expires").value;
+    try {
+      const review = await BugHunterApi.createAuthorizationReview(scope.id, {
+        program_name: byId("review-program").value.trim(),
+        platform_name: byId("review-platform").value.trim(),
+        authorized_asset: byId("review-asset").value.trim(),
+        allow_subdomains: byId("review-subdomains").checked,
+        policy_url: byId("review-policy").value.trim(),
+        excluded_assets: splitAssets(byId("review-exclusions").value),
+        evidence_notes: byId("review-evidence").value.trim(),
+        expires_at: expiryValue ? new Date(expiryValue).toISOString() : null,
+      });
+      toast(`Review #${review.id} submitted as PENDING; no scans are authorized yet.`);
+      byId("review-evidence").value = "";
+      byId("review-expires").value = "";
+      await Promise.all([loadAuthorizationReviews(), refreshScopes()]);
+    } catch (error) { errorEl.textContent = error.message; errorEl.classList.remove("hidden"); }
+  }
+
+  async function decideAuthorizationReview(reviewId, decision, controls) {
+    const reviewer = controls.querySelector(".reviewer-name").value.trim();
+    const notes = controls.querySelector(".reviewer-decision").value.trim();
+    if (reviewer.length < 2 || notes.length < 3) { toast("Enter a reviewer name and a clear decision note.", true); return; }
+    try {
+      await BugHunterApi.decideAuthorizationReview(reviewId, { status: decision, reviewer, decision: notes });
+      toast(`Authorization review ${decision.toLowerCase()}.`);
+      await Promise.all([loadAuthorizationReviews(), refreshScopes()]);
     } catch (error) { toast(error.message, true); }
   }
 
@@ -380,7 +586,7 @@
     const missing = tools.filter((item) => !item.available && !item.simulated);
     setStatus(byId("subfinder-tool-state"), mock ? "MOCK ADAPTER" : missing.length ? "NOT INSTALLED" : "INSTALLED", mock ? "pending" : missing.length ? "error" : "ok");
     byId("subfinder-tool-version").textContent = mock ? "Simulated adapter · no binary required" : `${installed} available · ${missing.length} missing`;
-    byId("subfinder-tool-mode").textContent = mock ? "No network requests are made" : (tool?.version || "Local security tools");
+    byId("subfinder-tool-mode").textContent = mock ? "No network requests are made" : (tool?.command || tool?.executable_name || tool?.version || "Local security tools");
     byId("subfinder-tool-notice").textContent = mock ? "Development output is explicitly simulated." : missing.map((item) => item.install_hint || item.name).join("; ") || "Tool status comes from the local backend.";
   }
 
@@ -459,7 +665,9 @@
       renderTargets();
       renderReconPrograms();
       loadDashboardRecon();
+      loadDashboardVulnerabilityStats();
       if (reconViews.has(state.activeView)) loadRecon();
+      if (state.activeView === "authorization-reviews") renderAuthorizationView();
     } catch (error) {
       byId("overview-program-list").innerHTML = `<div class="load-error">${escapeText(error.message)} <button class="text-button" id="retry-scopes">Retry</button></div>`;
       byId("target-table-body").innerHTML = `<tr><td colspan="6" class="table-loading">Could not load scopes: ${escapeText(error.message)}</td></tr>`;
@@ -511,7 +719,9 @@
     byId("view-overview").classList.toggle("hidden", view !== "overview");
     byId("view-targets").classList.toggle("hidden", !targetViews.has(view));
     byId("view-recon").classList.toggle("hidden", !reconViews.has(view));
-    byId("view-placeholder").classList.toggle("hidden", view === "overview" || targetViews.has(view) || reconViews.has(view));
+    byId("view-authorization").classList.toggle("hidden", view !== "authorization-reviews");
+    const isVulnerabilityView = view === "findings" || view === "vulnerability-scanner";
+    byId("view-placeholder").classList.toggle("hidden", view === "overview" || targetViews.has(view) || reconViews.has(view) || view === "authorization-reviews");
     if (targetViews.has(view)) {
       byId("target-page-title").textContent = data[1];
       byId("target-search").value = "";
@@ -521,10 +731,16 @@
       byId("recon-subtitle").textContent = reconModules[view].description;
       renderReconControls();
       loadRecon();
+    } else if (view === "authorization-reviews") {
+      renderAuthorizationView();
     } else if (view !== "overview") {
       byId("placeholder-title").textContent = data[1];
       byId("placeholder-description").textContent = data[2];
-      if (view === "tool-management") renderToolManagement();
+      byId("placeholder-content").innerHTML = "";
+      byId("placeholder-fallback").classList.toggle("hidden", isVulnerabilityView || view === "tool-management" || view === "settings");
+      if (view === "findings") renderFindingsManagement();
+      else if (view === "vulnerability-scanner") renderVulnerabilityScanner();
+      else if (view === "tool-management") renderToolManagement();
       else if (view === "settings") renderSettings();
       else {
         byId("coming-title").textContent = `${data[1]} API is not connected`;
@@ -602,6 +818,12 @@
     }
   }
 
+  function openAuthorizationScope(id) {
+    navigate("authorization-reviews");
+    byId("review-scope").value = String(id);
+    populateReviewFormFromScope();
+  }
+
   function bindEvents() {
     document.querySelectorAll("[data-view]").forEach((link) => link.addEventListener("click", (event) => {
       event.preventDefault();
@@ -612,6 +834,13 @@
     ["add-target-button", "target-add-button", "empty-add-target"].forEach((id) => byId(id).addEventListener("click", openModal));
     ["modal-close", "modal-cancel"].forEach((id) => byId(id).addEventListener("click", closeModal));
     byId("target-form").addEventListener("submit", submitTarget);
+    byId("authorization-review-form").addEventListener("submit", submitAuthorizationReview);
+    byId("review-scope").addEventListener("change", populateReviewFormFromScope);
+    byId("authorization-refresh").addEventListener("click", loadAuthorizationReviews);
+    byId("authorization-review-list").addEventListener("click", (event) => {
+      const button = event.target.closest("[data-review-decision]");
+      if (button) decideAuthorizationReview(button.closest("[data-review-id]").dataset.reviewId, button.dataset.reviewDecision, button.closest("[data-review-id]"));
+    });
     byId("target-form").elements.local_lab_mode.addEventListener("change", (event) => byId("lab-ports-row").classList.toggle("hidden", !event.target.checked));
     byId("recon-controls").addEventListener("change", (event) => {
       if (event.target.id === "recon-scope-select") loadRecon();
@@ -626,8 +855,8 @@
     byId("target-table-body").addEventListener("click", (event) => {
       const button = event.target.closest("[data-delete-scope]");
       if (button) deleteScope(button.dataset.deleteScope);
-      const review = event.target.closest("[data-verify-scope]");
-      if (review) reviewAuthorization(review.dataset.verifyScope);
+      const review = event.target.closest("[data-open-authorization]");
+      if (review) openAuthorizationScope(review.dataset.openAuthorization);
     });
     ["refresh-button", "target-refresh-button"].forEach((id) => byId(id).addEventListener("click", () => Promise.all([refreshScopes(), refreshHealth()])));
     byId("docs-button").addEventListener("click", () => window.open("/docs", "_blank", "noopener"));

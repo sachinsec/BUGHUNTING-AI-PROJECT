@@ -44,7 +44,7 @@ def _scope(scope_id: int) -> ScopeRecord:
                        created_at=datetime.fromisoformat(row["created_at"]))
 
 
-def parse_katana_output(output: str, scope: ScopeRecord) -> tuple[list[dict], int]:
+def parse_katana_output(output: str, scope: ScopeRecord, require_approved: bool = False) -> tuple[list[dict], int]:
     found: dict[tuple[str, str], dict] = {}
     rejected = 0
     for line in output[:5_000_000].splitlines()[:50_000]:
@@ -56,6 +56,9 @@ def parse_katana_output(output: str, scope: ScopeRecord) -> tuple[list[dict], in
             if not isinstance(url, str):
                 raise ValueError("Missing endpoint URL")
             validate_url_in_scope(url, scope, resolve=False)
+            if require_approved and not scope.local_lab_mode:
+                from urllib.parse import urlsplit
+                validate_real_network_access(scope, urlsplit(url).hostname or "", resolve=False)
             method = str(item.get("method") or "GET").upper()
             if not _METHOD.fullmatch(method):
                 raise ValueError("Invalid HTTP method")
@@ -142,7 +145,7 @@ def _run(scan_id: int, scope: ScopeRecord, target: str, adapter, cancel_event: t
                 raise RuntimeError("Katana process failed")
             output = result.get("stdout", "")
         _update(scan_id, stage="validating_endpoints", progress=0)
-        endpoints, rejected = parse_katana_output(output, scope)
+        endpoints, rejected = parse_katana_output(output, scope, require_approved=not simulated)
         discovered_at = _now()
         with connect() as db:
             db.executemany("INSERT OR IGNORE INTO discovered_endpoints(scope_id, scan_id, url, method, source, simulated, discovered_at) VALUES (?, ?, ?, ?, ?, ?, ?)",

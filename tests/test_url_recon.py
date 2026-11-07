@@ -46,6 +46,19 @@ def add_scope(client):
     return response.json()
 
 
+def approve_scope(client, scope):
+    review = client.post(f"/api/scopes/{scope['id']}/authorization-reviews", json={
+        "program_name": scope["program_name"], "platform_name": "Test platform",
+        "authorized_asset": scope["root_domain"], "allow_subdomains": True,
+        "policy_url": "https://program.example/policy", "excluded_assets": [],
+        "evidence_notes": "Reviewed archive test authorization",
+    })
+    assert review.status_code == 201
+    decision = client.put(f"/api/authorization-reviews/{review.json()['id']}", json={
+        "status": "APPROVED", "reviewer": "Test reviewer", "decision": "Reviewed test policy."})
+    assert decision.status_code == 200
+
+
 def wait_for_scan(client, scan_id):
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
@@ -98,9 +111,7 @@ def test_url_api_requires_registered_scope_and_archive_provider(tmp_path, monkey
     with TestClient(app) as client:
         assert client.post("/api/recon/urls/start", json={"scope_id": 123}).status_code == 404
         scope = add_scope(client)
-        assert client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={"verified": True,
-            "verified_by": "test reviewer", "review_notes": "Reviewed archive test authorization",
-            "authorization_reference": "https://program.example/policy"}).status_code == 200
+        approve_scope(client, scope)
         response = client.post("/api/recon/urls/start", json={"scope_id": scope["id"]})
         assert response.status_code == 503
         assert "GAU and/or Waybackurls" in response.json()["detail"]
@@ -121,9 +132,7 @@ def test_url_job_cancellation(tmp_path, monkeypatch):
     try:
         with TestClient(app) as client:
             scope = add_scope(client)
-            assert client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={"verified": True,
-                "verified_by": "test reviewer", "review_notes": "Reviewed archive test authorization",
-                "authorization_reference": "https://program.example/policy"}).status_code == 200
+            approve_scope(client, scope)
             started = client.post("/api/recon/urls/start", json={"scope_id": scope["id"]})
             assert started.status_code == 202
             assert started_event.wait(1)

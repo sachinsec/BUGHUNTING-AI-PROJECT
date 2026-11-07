@@ -26,6 +26,17 @@
     scopes: () => request("/api/scopes"),
     createScope: (data) => request("/api/scopes", { method: "POST", body: JSON.stringify(data) }),
     verifyAuthorization: (id, data) => request(`/api/scopes/${encodeURIComponent(id)}/verify-authorization`, { method: "POST", body: JSON.stringify(data) }),
+    authorizationReviews: (id) => request(`/api/scopes/${encodeURIComponent(id)}/authorization-reviews`),
+    createAuthorizationReview: (id, data) => request(`/api/scopes/${encodeURIComponent(id)}/authorization-reviews`, { method: "POST", body: JSON.stringify(data) }),
+    decideAuthorizationReview: (id, data) => request(`/api/authorization-reviews/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(data) }),
+    vulnerabilities: (filters = {}) => {
+      const query = new URLSearchParams(Object.entries(filters).filter(([, value]) => value));
+      return request(`/api/vulnerabilities${query.size ? `?${query}` : ""}`);
+    },
+    vulnerability: (id) => request(`/api/vulnerabilities/${encodeURIComponent(id)}`),
+    createVulnerability: (data) => request("/api/vulnerabilities", { method: "POST", body: JSON.stringify(data) }),
+    updateVulnerability: (id, data) => request(`/api/vulnerabilities/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(data) }),
+    vulnerabilityStats: () => request("/api/vulnerabilities/stats"),
     deleteScope: (id) => request(`/api/scopes/${encodeURIComponent(id)}`, { method: "DELETE" }),
     subdomains: (scopeId) => request(scoped("/api/recon/subdomains", scopeId)),
     subdomainScan: (scanId) => request(`/api/recon/subdomains/${encodeURIComponent(scanId)}`),

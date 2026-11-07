@@ -28,17 +28,29 @@ def test_public_real_scan_requires_separate_manual_program_review(tmp_path, monk
         response = add_scope(client)
         assert response.status_code == 201
         scope = response.json()
-        assert scope["authorization_status"] == "unverified"
+        assert scope["authorization_status"] == "PENDING"
         blocked = client.post("/api/recon/subdomains/start", json={"scope_id": scope["id"]})
         assert blocked.status_code == 422
-        assert "separately reviewed" in blocked.json()["detail"]
+        assert "missing" in blocked.json()["detail"]
 
-        verified = client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={
+        legacy = client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={
             "verified": True, "verified_by": "Researcher", "review_notes": "I reviewed the active program policy and target scope.",
         })
-        assert verified.status_code == 200
-        assert verified.json()["authorization_status"] == "verified"
-        assert verified.json()["authorization_verified_by"] == "Researcher"
+        assert legacy.status_code == 409
+        assert "separate reviewer decision" in legacy.json()["detail"]
+        assert client.get("/api/scopes").json()[0]["authorization_status"] == "PENDING"
+
+        review = client.post(f"/api/scopes/{scope['id']}/authorization-reviews", json={
+            "program_name": "Authorization test", "platform_name": "Test platform",
+            "authorized_asset": "public.example.test", "allow_subdomains": True,
+            "policy_url": "https://program.example/policy", "excluded_assets": [],
+            "evidence_notes": "I reviewed the active program policy and target scope.",
+        })
+        assert review.status_code == 201
+        approved = client.put(f"/api/authorization-reviews/{review.json()['id']}", json={
+            "status": "APPROVED", "reviewer": "Researcher", "decision": "Evidence and scope reviewed."})
+        assert approved.status_code == 200
+        assert client.get("/api/scopes").json()[0]["authorization_status"] == "APPROVED"
 
 
 def test_local_lab_requires_exact_loopback_host_and_configured_port(monkeypatch):

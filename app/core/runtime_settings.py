@@ -40,7 +40,7 @@ def set_scan_mode(mode: str) -> str:
     if mode not in {"mock", "real", "local_lab"}:
         raise ValueError("Scan mode must be 'mock', 'real', or 'local_lab'")
     if APP_PROFILE == "PRODUCTION_KALI" and mode != "real":
-        raise ValueError("PRODUCTION_KALI permits REAL execution mode only")
+        raise ValueError("Non-REAL execution modes are disabled in PRODUCTION_KALI")
     from app.core.database import connect
 
     with connect() as db:

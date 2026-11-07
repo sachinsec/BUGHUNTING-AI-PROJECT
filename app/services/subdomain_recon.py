@@ -44,7 +44,7 @@ def _load_scope(scope_id: int) -> ScopeRecord:
     )
 
 
-def parse_subfinder_output(output: str, scope: ScopeRecord) -> tuple[list[dict], int]:
+def parse_subfinder_output(output: str, scope: ScopeRecord, require_approved: bool = False) -> tuple[list[dict], int]:
     """Parse JSONL or plain Subfinder output; discard malformed, duplicate, and out-of-scope hosts."""
     results: dict[str, str | None] = {}
     rejected = 0
@@ -67,7 +67,10 @@ def parse_subfinder_output(output: str, scope: ScopeRecord) -> tuple[list[dict],
             source = str(raw_source)[:100] if raw_source else None
         try:
             host = normalize_domain(candidate)
-            validate_domain_in_scope(host, scope, resolve=False)
+            if require_approved:
+                validate_real_network_access(scope, host, resolve=False, allow_local_lab=False)
+            else:
+                validate_domain_in_scope(host, scope, resolve=False)
         except (ScopeError, AttributeError, TypeError):
             rejected += 1
             continue
@@ -160,7 +163,7 @@ def _run_scan(scan_id: int, scope: ScopeRecord, adapter, cancel_event: threading
             return
 
         _update_scan(scan_id, stage="processing_results", progress=0)
-        assets, rejected = parse_subfinder_output(output, scope)
+        assets, rejected = parse_subfinder_output(output, scope, require_approved=not simulated)
         discovered_at = _now()
         with connect() as db:
             db.executemany(

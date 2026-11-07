@@ -48,6 +48,19 @@ def create_scope(client, root="example.test"):
     return response.json()
 
 
+def approve_scope(client, scope):
+    review = client.post(f"/api/scopes/{scope['id']}/authorization-reviews", json={
+        "program_name": scope["program_name"], "platform_name": "Test platform",
+        "authorized_asset": scope["root_domain"], "allow_subdomains": True,
+        "policy_url": "https://program.example/policy", "excluded_assets": [],
+        "evidence_notes": "Reviewed test program scope",
+    })
+    assert review.status_code == 201
+    decision = client.put(f"/api/authorization-reviews/{review.json()['id']}", json={
+        "status": "APPROVED", "reviewer": "Test reviewer", "decision": "Reviewed test policy."})
+    assert decision.status_code == 200
+
+
 def wait_for_scan(client, scan_id):
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
@@ -199,10 +212,7 @@ def test_api_rejects_unknown_program_and_reports_missing_tool(tmp_path, monkeypa
         scope = create_scope(client)
         monkeypatch.setattr(recon, "get_scan_mode", lambda: "real")
         monkeypatch.setattr(recon, "validate_real_network_access", lambda _scope, host, **_kwargs: host)
-        verified = client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={
-            "verified": True, "verified_by": "test reviewer", "review_notes": "Reviewed test program scope",
-            "authorization_reference": "https://program.example/policy"})
-        assert verified.status_code == 200
+        approve_scope(client, scope)
 
         class MissingManager:
             def __init__(self, mode):

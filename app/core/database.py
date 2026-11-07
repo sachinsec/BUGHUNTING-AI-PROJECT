@@ -28,6 +28,46 @@ def initialize_database() -> None:
             local_lab_ports TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS authorization_reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_id INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+            status TEXT NOT NULL CHECK (status IN ('PENDING','APPROVED','REJECTED','EXPIRED')),
+            program_name TEXT NOT NULL,
+            platform_name TEXT NOT NULL DEFAULT '',
+            authorized_asset TEXT NOT NULL,
+            allow_subdomains INTEGER NOT NULL CHECK (allow_subdomains IN (0,1)),
+            policy_url TEXT NOT NULL,
+            excluded_assets TEXT NOT NULL DEFAULT '[]',
+            evidence_notes TEXT NOT NULL DEFAULT '',
+            reviewer TEXT,
+            decision TEXT NOT NULL DEFAULT '',
+            reviewed_at TEXT,
+            expires_at TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_auth_reviews_scope ON authorization_reviews(scope_id, id DESC);
+        CREATE TABLE IF NOT EXISTS vulnerability_findings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_id INTEGER REFERENCES scopes(id) ON DELETE SET NULL,
+            scan_id INTEGER,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            target TEXT NOT NULL,
+            severity TEXT NOT NULL CHECK (severity IN ('INFO','LOW','MEDIUM','HIGH','CRITICAL')),
+            status TEXT NOT NULL CHECK (status IN ('POTENTIAL','VERIFIED','FALSE_POSITIVE','RESOLVED')),
+            source TEXT NOT NULL DEFAULT 'manual',
+            evidence_json TEXT NOT NULL DEFAULT '{}',
+            reviewer TEXT,
+            reviewer_notes TEXT NOT NULL DEFAULT '',
+            execution_mode TEXT NOT NULL CHECK (execution_mode IN ('REAL','MOCK','LOCAL_LAB')),
+            simulated INTEGER NOT NULL CHECK (simulated IN (0,1)),
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            CHECK ((execution_mode = 'MOCK' AND simulated = 1) OR (execution_mode != 'MOCK' AND simulated = 0))
+        );
+        CREATE INDEX IF NOT EXISTS idx_findings_status_severity ON vulnerability_findings(status, severity);
+        CREATE INDEX IF NOT EXISTS idx_findings_target ON vulnerability_findings(target);
+        CREATE INDEX IF NOT EXISTS idx_findings_scope ON vulnerability_findings(scope_id, id DESC);
         CREATE TABLE IF NOT EXISTS recon_scans (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             scope_id INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
@@ -156,6 +196,11 @@ def initialize_database() -> None:
             db.execute("ALTER TABLE scopes ADD COLUMN authorization_review_notes TEXT NOT NULL DEFAULT ''")
         if "local_lab_ports" not in columns:
             db.execute("ALTER TABLE scopes ADD COLUMN local_lab_ports TEXT NOT NULL DEFAULT '[]'")
+        review_columns = {row["name"] for row in db.execute("PRAGMA table_info(authorization_reviews)")}
+        if "platform_name" not in review_columns:
+            db.execute("ALTER TABLE authorization_reviews ADD COLUMN platform_name TEXT NOT NULL DEFAULT ''")
+        if "excluded_assets" not in review_columns:
+            db.execute("ALTER TABLE authorization_reviews ADD COLUMN excluded_assets TEXT NOT NULL DEFAULT '[]'")
 
 
 @contextmanager

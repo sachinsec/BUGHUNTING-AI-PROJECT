@@ -10,7 +10,7 @@ Run the configured executable name as the same user that launches FastAPI. Check
 
 ## httpx is rejected
 
-The Python package named `httpx` may provide an unrelated CLI. AI BugHunter accepts ProjectDiscovery version output only. Configure `HTTPX_EXECUTABLE` to the correct executable name and ensure it is available in the backend process PATH.
+The Python package named `httpx` may provide an unrelated CLI. AI BugHunter accepts a ProjectDiscovery version banner only. On Kali, set `HTTPX_EXECUTABLE=httpx-toolkit`; for another install, configure its executable name or full path and ensure the backend service user can access it.
 
 ## Ollama unavailable
 

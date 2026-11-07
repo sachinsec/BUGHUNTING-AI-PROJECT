@@ -44,6 +44,19 @@ def add_scope(client):
     return response.json()
 
 
+def approve_scope(client, scope):
+    review = client.post(f"/api/scopes/{scope['id']}/authorization-reviews", json={
+        "program_name": scope["program_name"], "platform_name": "Test platform",
+        "authorized_asset": scope["root_domain"], "allow_subdomains": True,
+        "policy_url": "https://program.example/policy", "excluded_assets": [],
+        "evidence_notes": "Reviewed crawl test authorization",
+    })
+    assert review.status_code == 201
+    decision = client.put(f"/api/authorization-reviews/{review.json()['id']}", json={
+        "status": "APPROVED", "reviewer": "Test reviewer", "decision": "Reviewed test policy."})
+    assert decision.status_code == 200
+
+
 def wait_for_scan(client, scan_id):
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
@@ -116,9 +129,7 @@ def test_endpoint_scan_rejects_out_of_scope_and_missing_katana(tmp_path, monkeyp
     monkeypatch.setattr(endpoints, "ToolManager", lambda mode: Manager(Adapter(available=False)))
     with TestClient(app) as client:
         scope = add_scope(client)
-        assert client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={"verified": True,
-            "verified_by": "test reviewer", "review_notes": "Reviewed crawl test authorization",
-            "authorization_reference": "https://program.example/policy"}).status_code == 200
+        approve_scope(client, scope)
         out = client.post("/api/recon/endpoints/start", json={"scope_id": scope["id"], "target_host": "outside.test", "approval_confirmed": True})
         assert out.status_code == 422
         missing = client.post("/api/recon/endpoints/start", json={"scope_id": scope["id"], "target_host": "example.test", "approval_confirmed": True})

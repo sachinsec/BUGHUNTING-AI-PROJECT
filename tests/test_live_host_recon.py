@@ -44,6 +44,19 @@ def add_scope(client):
     return response.json()
 
 
+def approve_scope(client, scope):
+    review = client.post(f"/api/scopes/{scope['id']}/authorization-reviews", json={
+        "program_name": scope["program_name"], "platform_name": "Test platform",
+        "authorized_asset": scope["root_domain"], "allow_subdomains": True,
+        "policy_url": "https://program.example/policy", "excluded_assets": [],
+        "evidence_notes": "Reviewed live-host test authorization",
+    })
+    assert review.status_code == 201
+    decision = client.put(f"/api/authorization-reviews/{review.json()['id']}", json={
+        "status": "APPROVED", "reviewer": "Test reviewer", "decision": "Reviewed test policy."})
+    assert decision.status_code == 200
+
+
 def wait_for_scan(client, scan_id):
     deadline = time.monotonic() + 3
     while time.monotonic() < deadline:
@@ -84,7 +97,7 @@ def test_httpx_adapter_rejects_unrelated_python_httpx_executable(monkeypatch):
         args=[], returncode=0, stdout="Usage: httpx [OPTIONS] URL", stderr=""))
     result = HttpxAdapter().detect()
     assert result["available"] is False
-    assert "ProjectDiscovery httpx was not detected" in result["install_hint"]
+    assert "unrelated tools named httpx are rejected" in result["install_hint"]
 
 
 def test_httpx_adapter_prefers_httpx_toolkit_and_falls_back_to_pd_httpx(monkeypatch):
@@ -96,12 +109,14 @@ def test_httpx_adapter_prefers_httpx_toolkit_and_falls_back_to_pd_httpx(monkeypa
 
     def version(args, **kwargs):
         calls.append(args[0])
-        return subprocess.CompletedProcess(args=args, returncode=0, stdout="httpx version v1.6.2", stderr="")
+        return subprocess.CompletedProcess(args=args, returncode=0,
+            stdout="projectdiscovery.io\nCurrent Version: v1.6.2", stderr="")
 
     monkeypatch.setattr(subprocess, "run", version)
     adapter = HttpxAdapter()
     detected = adapter.detect()
     assert detected["available"] is True
+    assert detected["command"] == "httpx-toolkit"
     assert detected["command"] == "httpx-toolkit"
     assert calls[0] == "/tools/httpx-toolkit"
 
@@ -136,9 +151,7 @@ def test_live_host_api_rejects_missing_program_and_missing_tool(tmp_path, monkey
     with TestClient(app) as client:
         assert client.post("/api/recon/live-hosts/start", json={"scope_id": 99}).status_code == 404
         scope = add_scope(client)
-        assert client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={"verified": True,
-            "verified_by": "test reviewer", "review_notes": "Reviewed live host test authorization",
-            "authorization_reference": "https://program.example/policy"}).status_code == 200
+        approve_scope(client, scope)
         response = client.post("/api/recon/live-hosts/start", json={"scope_id": scope["id"]})
         assert response.status_code == 503
         assert "httpx is not installed" in response.json()["detail"]
@@ -159,9 +172,7 @@ def test_live_host_scan_cancellation(tmp_path, monkeypatch):
     try:
         with TestClient(app) as client:
             scope = add_scope(client)
-            assert client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={"verified": True,
-                "verified_by": "test reviewer", "review_notes": "Reviewed local test authorization",
-                "authorization_reference": "https://program.example/policy"}).status_code == 200
+            approve_scope(client, scope)
             started = client.post("/api/recon/live-hosts/start", json={"scope_id": scope["id"]})
             assert started.status_code == 202
             assert started_event.wait(1)
