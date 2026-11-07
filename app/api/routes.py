@@ -14,9 +14,11 @@ router = APIRouter()
 
 
 def _record(row) -> ScopeRecord:
-    return ScopeRecord(id=row["id"], root_domain=row["root_domain"], include_subdomains=bool(row["include_subdomains"]),
+    return ScopeRecord(id=row["id"], root_domain=row["root_domain"], program_name=row["program_name"],
+                       include_subdomains=bool(row["include_subdomains"]), included_assets=json.loads(row["included_assets"]),
                        excluded_subdomains=json.loads(row["excluded_subdomains"]), authorization_notes=row["authorization_notes"],
-                       authorization_confirmed=bool(row["authorization_confirmed"]), created_at=datetime.fromisoformat(row["created_at"]))
+                       authorization_confirmed=bool(row["authorization_confirmed"]), local_lab_mode=bool(row["local_lab_mode"]),
+                       created_at=datetime.fromisoformat(row["created_at"]))
 
 
 @router.get("/health")
@@ -40,16 +42,18 @@ def create_scope(payload: ScopeCreate):
         raise HTTPException(status_code=400, detail="Explicit authorization confirmation is required")
     try:
         root = normalize_domain(payload.root_domain)
+        included = sorted({normalize_domain(item) for item in payload.included_assets})
         excluded = sorted({normalize_domain(item) for item in payload.excluded_subdomains})
-        if any(item != root and not item.endswith("." + root) for item in excluded):
-            raise ScopeError("Excluded subdomains must belong to the authorized root domain")
+        if any(item != root and not item.endswith("." + root) for item in included + excluded):
+            raise ScopeError("Included and excluded assets must belong to the authorized root domain")
     except ScopeError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     created_at = datetime.now(timezone.utc).isoformat()
     try:
         with connect() as db:
-            cursor = db.execute("INSERT INTO scopes(root_domain, include_subdomains, excluded_subdomains, authorization_notes, authorization_confirmed, created_at) VALUES (?, ?, ?, ?, 1, ?)",
-                                (root, int(payload.include_subdomains), json.dumps(excluded), payload.authorization_notes.strip(), created_at))
+            cursor = db.execute("INSERT INTO scopes(root_domain, program_name, include_subdomains, included_assets, excluded_subdomains, authorization_notes, authorization_confirmed, local_lab_mode, created_at) VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)",
+                                (root, payload.program_name.strip() or root, int(payload.include_subdomains), json.dumps(included),
+                                 json.dumps(excluded), payload.authorization_notes.strip(), int(payload.local_lab_mode), created_at))
             row = db.execute("SELECT * FROM scopes WHERE id = ?", (cursor.lastrowid,)).fetchone()
     except Exception as exc:
         if "UNIQUE" in str(exc):
