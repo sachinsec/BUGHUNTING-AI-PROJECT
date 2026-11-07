@@ -49,7 +49,14 @@ APP_HOST = os.environ.get("APP_HOST", "127.0.0.1")
 APP_PORT = int(os.environ.get("APP_PORT", "8000"))
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3:4b")
+HTTPX_EXECUTABLE = os.environ.get("HTTPX_EXECUTABLE", "httpx-toolkit").strip()
 AI_MAX_CONCURRENCY = max(1, int(os.environ.get("AI_MAX_CONCURRENCY", "1")))
 AI_CONTEXT_LENGTH = max(512, int(os.environ.get("AI_CONTEXT_LENGTH", "4096")))
-SCAN_MODE = os.environ.get("SCAN_MODE", "real" if APP_ENV == "production" else "mock").lower()
+def _scan_mode(environment: str, configured_mode: str | None = None) -> str:
+    mode = (configured_mode or ("real" if environment == "production" else "mock")).lower()
+    # Production must never emit sample observations, even if a stale .env says mock.
+    return "real" if environment == "production" and mode == "mock" else mode
+
+
+SCAN_MODE = _scan_mode(APP_ENV, os.environ.get("SCAN_MODE"))
 SCAN_TIMEOUT = max(1, int(os.environ.get("SCAN_TIMEOUT", "300")))

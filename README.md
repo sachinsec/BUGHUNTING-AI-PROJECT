@@ -6,12 +6,26 @@ Local-first security reconnaissance and finding management for Windows developme
 
 1. **Foundation (implemented):** portable configuration, SQLite persistence, explicit authorization records, scope validation, and health endpoint.
 2. **Adapters (initial implementation):** local Ollama health/inference client, explicitly simulated mock adapters, and optional real tool detection/invocation wrappers.
-3. **Asset and scan persistence:** scan lifecycle, discovered asset models, job cancellation, and bounded background execution.
-4. **Recon and findings:** full stage orchestration, parsing, deduplication, persistence, and verification workflow.
+3. **Reconnaissance (implemented):** background Subfinder, HTTPX, GAU/Waybackurls, approval-gated Katana, parameter extraction, WhatWeb, scan status/cancellation, and orchestration.
+4. **Findings:** safe scanner result persistence, deduplication, and researcher verification workflow.
 5. **AI analysis and reports:** evidence-grounded finding analysis and Markdown/JSON report generation.
-6. **Dashboard:** responsive frontend connected to real APIs and end-to-end verification.
+6. **Dashboard (first pass):** responsive dashboard and live reconnaissance pages connected to APIs; finding and report views remain pending.
 
-Each phase should be reviewed and verified before starting the next. No scan execution endpoint or orchestration is exposed yet. Real tool wrappers are initial infrastructure and are not a complete or audited scanner workflow.
+The reconnaissance adapters are modular and use local binaries only in `SCAN_MODE=real`. On Windows, default mock results are marked `simulated`; the dashboard excludes them from real asset counts. Katana requires explicit approval. The vulnerability scanner, findings, HTTP history, and reporting APIs are not implemented yet.
+
+## Current reconnaissance API: Subfinder
+
+All reconnaissance APIs are under `/api/recon`:
+
+- Subdomains: `POST /subdomains/start`, `GET /subdomains`, `GET /subdomains/{scan_id}`
+- Live hosts: `POST /live-hosts/start`, `GET /live-hosts`
+- Historical URLs: `POST /urls/start`, `GET /urls`
+- Endpoints: `POST /endpoints/start` (requires `approval_confirmed: true`), `GET /endpoints`
+- Parameters: `GET /parameters`
+- Technologies: `POST /technologies/start`, `GET /technologies`
+- Full workflow: `POST /start` (Katana is skipped unless `active_crawl_approved: true`), `GET /scans`, `GET /scans/{job_id}`, `POST /scans/{job_id}/cancel`
+
+Start requests take a registered `scope_id`. Poll an individual module's `GET` scan resource for status and results. Results include `simulated: true` in mock mode; they are separately persisted and visibly labeled. For real runs, install the appropriate tools and set `SCAN_MODE=real`. HTTPX results use pre-resolved public IPs and do not follow redirects. Katana crawling requires explicit approval and a low request limit.
 
 ## Requirements and setup
 
@@ -33,15 +47,15 @@ python run.py
 
 The API documentation is at `http://127.0.0.1:8000/docs`; `/api/health` reports database, Ollama, and tool availability. Keep the service on localhost until authentication is implemented.
 
-SQLite defaults to `data/bughunter.db` through `DATABASE_URL=sqlite:///./data/bughunter.db`. Configuration can come from environment variables or `.env`; see [.env.example](./.env.example). Phase 1 uses Python's built-in SQLite driver; SQLAlchemy is included for the planned repository layer.
+SQLite defaults to `data/bughunter.db` through `DATABASE_URL=sqlite:///./data/bughunter.db`. Configuration can come from environment variables or `.env`; see [.env.example](./.env.example). Set `HTTPX_EXECUTABLE=httpx-toolkit` (the default preference) or another verified ProjectDiscovery binary name to configure the HTTP probing executable.
 
 ## Registering an authorized scope
 
 `POST /api/scopes` accepts a root domain, whether subdomains are included, excluded subdomains, authorization notes, and `authorization_confirmed: true`. Only public DNS domain names are accepted. Scope registration does not itself run a scan. Scope checks reject local/private/reserved destinations and check DNS answers when validating a destination immediately before a future network operation.
 
-## Phase 1 verification
+## Verification
 
-Run `python -m pytest`. Tests cover scope boundaries, database/API operations, simulated tool labeling, and mock Ollama responses. The environment checker is `python scripts/check_environment.py` (use `.venv/bin/python` on Kali).
+Run `python -m pytest`. Tests cover scope boundaries, API behavior, parsing, persistence, mock labeling, tool detection, cancellation, and orchestrator stages. The environment checker is `python scripts/check_environment.py` (use `.venv/bin/python` on Kali).
 
 ## Platform guides
 

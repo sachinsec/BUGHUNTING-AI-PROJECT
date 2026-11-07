@@ -20,7 +20,7 @@ python3 -m venv .venv
 mkdir -p data logs reports
 if [[ ! -f .env ]]; then cp .env.example .env; fi
 echo 'Optional tools detected on this system:'
-for tool in ollama subfinder amass httpx katana nuclei zaproxy; do
+for tool in ollama subfinder amass httpx-toolkit httpx katana nuclei zaproxy; do
   if command -v "$tool" >/dev/null 2>&1; then printf '  %-12s %s\n' "$tool" "$(command -v "$tool")"; else printf '  %-12s not installed\n' "$tool"; fi
 done
 echo 'Setup complete. Review .env, then run ./scripts/start_kali.sh. Setup never starts a scan.'

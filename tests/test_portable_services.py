@@ -17,6 +17,11 @@ def test_relative_sqlite_url_resolves_under_project(monkeypatch):
     assert config._database_path("sqlite:///./data/sample.db") == config.BASE_DIR / "data" / "sample.db"
 
 
+def test_production_mode_cannot_enable_simulated_scan_results():
+    assert config._scan_mode("production", "mock") == "real"
+    assert config._scan_mode("development", "mock") == "mock"
+
+
 def test_database_adds_target_metadata_to_existing_scope_table(tmp_path, monkeypatch):
     legacy_path = tmp_path / "legacy.sqlite3"
     with sqlite3.connect(legacy_path) as legacy:
@@ -44,6 +49,7 @@ def test_api_health_and_scope_database_operations(tmp_path, monkeypatch):
         assert "AI BugHunter" in page.text
         assert client.get("/assets/js/dashboard.js").status_code == 200
         assert client.get("/assets/css/style.css").status_code == 200
+        assert client.get("/assets/css/recon.css").status_code == 200
         health = client.get("/api/health").json()
         assert health["database"] == "ok"
         assert health["ai_install_hint"].startswith("Install Ollama")

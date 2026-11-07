@@ -22,6 +22,108 @@ def initialize_database() -> None:
             local_lab_mode INTEGER NOT NULL DEFAULT 0 CHECK (local_lab_mode IN (0, 1)),
             created_at TEXT NOT NULL
         );
+        CREATE TABLE IF NOT EXISTS recon_scans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_id INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+            module TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+            stage TEXT NOT NULL,
+            progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+            simulated INTEGER NOT NULL DEFAULT 0 CHECK (simulated IN (0, 1)),
+            error TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            created_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_recon_scans_scope ON recon_scans(scope_id, id DESC);
+        CREATE TABLE IF NOT EXISTS discovered_subdomains (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_id INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+            scan_id INTEGER NOT NULL REFERENCES recon_scans(id) ON DELETE CASCADE,
+            hostname TEXT NOT NULL,
+            source TEXT,
+            simulated INTEGER NOT NULL DEFAULT 0 CHECK (simulated IN (0, 1)),
+            discovered_at TEXT NOT NULL,
+            UNIQUE(scan_id, hostname, simulated)
+        );
+        CREATE INDEX IF NOT EXISTS idx_subdomains_scope ON discovered_subdomains(scope_id, hostname);
+        CREATE TABLE IF NOT EXISTS live_hosts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_id INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+            scan_id INTEGER NOT NULL REFERENCES recon_scans(id) ON DELETE CASCADE,
+            hostname TEXT NOT NULL,
+            url TEXT NOT NULL,
+            status_code INTEGER,
+            title TEXT,
+            content_type TEXT,
+            ip_address TEXT,
+            simulated INTEGER NOT NULL DEFAULT 0 CHECK (simulated IN (0, 1)),
+            discovered_at TEXT NOT NULL,
+            UNIQUE(scan_id, url, simulated)
+        );
+        CREATE INDEX IF NOT EXISTS idx_live_hosts_scope ON live_hosts(scope_id, hostname);
+        CREATE TABLE IF NOT EXISTS historical_urls (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_id INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+            scan_id INTEGER NOT NULL REFERENCES recon_scans(id) ON DELETE CASCADE,
+            url TEXT NOT NULL,
+            source TEXT NOT NULL,
+            simulated INTEGER NOT NULL DEFAULT 0 CHECK (simulated IN (0, 1)),
+            discovered_at TEXT NOT NULL,
+            UNIQUE(scan_id, url, source, simulated)
+        );
+        CREATE INDEX IF NOT EXISTS idx_historical_urls_scope ON historical_urls(scope_id);
+        CREATE TABLE IF NOT EXISTS discovered_endpoints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_id INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+            scan_id INTEGER NOT NULL REFERENCES recon_scans(id) ON DELETE CASCADE,
+            url TEXT NOT NULL,
+            method TEXT NOT NULL DEFAULT 'GET',
+            source TEXT,
+            simulated INTEGER NOT NULL DEFAULT 0 CHECK (simulated IN (0, 1)),
+            discovered_at TEXT NOT NULL,
+            UNIQUE(scan_id, url, method, simulated)
+        );
+        CREATE INDEX IF NOT EXISTS idx_endpoints_scope ON discovered_endpoints(scope_id, url);
+        CREATE TABLE IF NOT EXISTS detected_technologies (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_id INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+            scan_id INTEGER NOT NULL REFERENCES recon_scans(id) ON DELETE CASCADE,
+            hostname TEXT NOT NULL,
+            technology TEXT NOT NULL,
+            version TEXT,
+            simulated INTEGER NOT NULL DEFAULT 0 CHECK (simulated IN (0, 1)),
+            detected_at TEXT NOT NULL,
+            UNIQUE(scan_id, hostname, technology, version, simulated)
+        );
+        CREATE INDEX IF NOT EXISTS idx_technologies_scope ON detected_technologies(scope_id, hostname);
+        CREATE TABLE IF NOT EXISTS orchestration_jobs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            scope_id INTEGER NOT NULL REFERENCES scopes(id) ON DELETE CASCADE,
+            status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+            stage TEXT NOT NULL,
+            progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+            simulated INTEGER NOT NULL DEFAULT 0 CHECK (simulated IN (0, 1)),
+            active_crawl_approved INTEGER NOT NULL DEFAULT 0 CHECK (active_crawl_approved IN (0, 1)),
+            current_child_module TEXT,
+            current_child_scan_id INTEGER,
+            error TEXT,
+            created_at TEXT NOT NULL,
+            started_at TEXT,
+            finished_at TEXT
+        );
+        CREATE TABLE IF NOT EXISTS orchestration_stages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            job_id INTEGER NOT NULL REFERENCES orchestration_jobs(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'completed', 'skipped', 'failed', 'cancelled')),
+            child_scan_id INTEGER,
+            error TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            UNIQUE(job_id, name)
+        );
+        CREATE INDEX IF NOT EXISTS idx_orchestration_jobs_scope ON orchestration_jobs(scope_id, id DESC);
         """)
         # Additive migrations preserve existing scope rows from earlier versions.
         columns = {row["name"] for row in db.execute("PRAGMA table_info(scopes)")}

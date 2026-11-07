@@ -48,7 +48,8 @@ def validate_domain_in_scope(domain: str, scope: ScopeRecord, resolve: bool = Tr
     normalized = normalize_domain(domain)
     root = normalize_domain(scope.root_domain)
     included_assets = set(getattr(scope, "included_assets", []))
-    if normalized != root and normalized not in included_assets and not (scope.include_subdomains and normalized.endswith("." + root)):
+    in_scope = normalized == root or normalized in included_assets or (scope.include_subdomains and normalized.endswith("." + root))
+    if not in_scope:
         raise ScopeError("Target is outside the registered scope")
     exclusions = {normalize_domain(item) for item in scope.excluded_subdomains}
     if any(normalized == item or normalized.endswith("." + item) for item in exclusions):
