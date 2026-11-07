@@ -18,7 +18,7 @@ python3 -m venv .venv
 .venv/bin/python -m pip install --upgrade pip
 .venv/bin/python -m pip install -r requirements.txt
 mkdir -p data logs reports
-if [[ ! -f .env ]]; then cp .env.example .env; fi
+if [[ ! -f .env ]]; then cp .env.kali.example .env; fi
 echo 'Optional tools detected on this system:'
 for tool in ollama subfinder amass httpx-toolkit httpx katana nuclei zaproxy; do
   if command -v "$tool" >/dev/null 2>&1; then printf '  %-12s %s\n' "$tool" "$(command -v "$tool")"; else printf '  %-12s not installed\n' "$tool"; fi

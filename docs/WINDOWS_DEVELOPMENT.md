@@ -1,6 +1,6 @@
 # Windows development
 
-Use PowerShell from the project root:
+Run setup from PowerShell at the repository root:
 
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
@@ -8,8 +8,14 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\scripts\start_windows.ps1
 ```
 
-Setup creates `.venv`, installs requirements, creates `data`, `logs`, and `reports`, and copies `.env.example` to `.env` only when `.env` does not exist. It never launches scanners. Default `SCAN_MODE=mock` uses clearly labeled sample data and makes no network requests.
+Setup copies `.env.windows.example` if `.env` does not exist. This profile explicitly selects MOCK. Mock output is labeled simulated and is not a finding. Change `SCAN_MODE=real` to verify real tool detection; missing tools report `NOT_INSTALLED` and never fall back to examples.
 
-Open `http://127.0.0.1:8000/docs` and `/api/health`. `python scripts/check_environment.py` reports Python packages, optional tools, and local Ollama status. Run `python -m pytest` for the portable suite.
+Inspect `/api/system/info`, `/api/tools/status`, `/api/health`, and `/docs`. Run tests and JavaScript syntax checks from the repository root:
 
-Mock mode supports backend development. It does not validate Kali command-line tool execution on Windows. Keep `.env` local; it is ignored by Git.
+```powershell
+.\.venv\Scripts\python.exe -m pytest -q
+node --check frontend/assets/js/dashboard.js
+node --check frontend/assets/js/api.js
+```
+
+Windows tests do not establish Kali command-line compatibility. Recreate `.venv` on Kali and do not commit `.env`, database user data, logs, reports, or secrets.

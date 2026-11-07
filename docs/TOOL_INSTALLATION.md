@@ -1,14 +1,7 @@
-# Optional security tool installation
+# Tool installation and detection
 
-Core development does not require Kali tools. On Kali, inspect package availability and prefer maintained distro packages when available:
+REAL mode calls `shutil.which()` and a bounded version check. Configure executable names in `.env` using `SUBFINDER_EXECUTABLE`, `AMASS_EXECUTABLE`, `HTTPX_EXECUTABLE`, `KATANA_EXECUTABLE`, `GAU_EXECUTABLE`, `WAYBACKURLS_EXECUTABLE`, `NUCLEI_EXECUTABLE`, `WHATWEB_EXECUTABLE`, and `ZAP_EXECUTABLE`. Add the tools to the FastAPI service user's PATH; do not put machine-specific absolute paths in source.
 
-```bash
-apt-cache search '^(subfinder|amass|httpx|katana|nuclei|zaproxy)$'
-apt-cache policy subfinder amass httpx katana nuclei zaproxy
-```
+Tool Management and `GET /api/tools/status` report MOCK, INSTALLED, NOT_INSTALLED, or ERROR states plus path/version where detected. `POST /api/tools/check` only detects/version-checks and never launches a scan. Nuclei is detection-only pending a separate approval/template workflow. ZAP is detection-only; its dedicated API client is not implemented.
 
-Install only intended tools using Kali packages or upstream release instructions. If your package exposes the ProjectDiscovery scanner as `httpx-toolkit`, the app prefers that command. Set `HTTPX_EXECUTABLE` in `.env` to override command selection. The adapter validates the reported version and rejects unrelated Python `httpx` commands. `whatweb`, `gau`, and `waybackurls` are wired into the reconnaissance adapter registry.
-
-The app detects `subfinder`, `amass`, `httpx-toolkit` or verified ProjectDiscovery `httpx`, `katana`, `nuclei`, `zaproxy`, `gau`, `waybackurls`, and `whatweb`. Missing tools are optional. Adapters use argument arrays, timeouts, no shell, scope checks, and conservative invocation spacing; selected commands also request 2 requests/second. Never run active checks without program permission. Setup scripts do not launch scans.
-
-Ollama instructions are in [Kali installation](./KALI_INSTALLATION.md). The official Linux installer command is `curl -fsSL https://ollama.com/install.sh | sh`; review upstream guidance before running it.
+For httpx, the adapter requires ProjectDiscovery-style version output and ignores unrelated executables such as Python HTTPX CLI. Set `HTTPX_EXECUTABLE` to a suitable executable name when necessary. Follow tool vendors' installation instructions and verify downloaded binaries according to their guidance.

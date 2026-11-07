@@ -5,9 +5,10 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from urllib.parse import urlsplit
 
-from app.config import SCAN_MODE
+from app.core.runtime_settings import get_scan_mode
 from app.core.database import connect
-from app.core.scope_manager import ScopeError, normalize_domain, validate_domain_in_scope, validate_url_in_scope
+from app.core.scope_manager import (ScopeError, normalize_domain, validate_domain_in_scope,
+                                    validate_real_network_access, validate_url_in_scope)
 from app.models.scope import ScopeRecord
 from app.services.tool_manager import ToolManager, ToolUnavailable
 
@@ -34,9 +35,12 @@ def _load_scope(scope_id: int) -> ScopeRecord:
     if not row["authorization_confirmed"]:
         raise LiveHostError("Explicit authorization is required before reconnaissance", 403)
     return ScopeRecord(id=row["id"], root_domain=row["root_domain"], program_name=row["program_name"],
+                       authorization_reference=row["authorization_reference"], authorization_status=row["authorization_status"],
+                       authorization_verified_by=row["authorization_verified_by"],
+                       authorization_verified_at=datetime.fromisoformat(row["authorization_verified_at"]) if row["authorization_verified_at"] else None,
                        include_subdomains=bool(row["include_subdomains"]), included_assets=json.loads(row["included_assets"]),
                        excluded_subdomains=json.loads(row["excluded_subdomains"]), authorization_notes=row["authorization_notes"],
-                       authorization_confirmed=True, local_lab_mode=bool(row["local_lab_mode"]),
+                       authorization_confirmed=True, local_lab_mode=bool(row["local_lab_mode"]), local_lab_ports=json.loads(row["local_lab_ports"]),
                        created_at=datetime.fromisoformat(row["created_at"]))
 
 
@@ -93,14 +97,23 @@ def _read_scan(scan_id: int):
     return dict(row)
 
 
-def start_live_host_scan(scope_id: int) -> dict:
+def start_live_host_scan(scope_id: int, target_url: str | None = None) -> dict:
     scope = _load_scope(scope_id)
-    simulated = SCAN_MODE == "mock"
+    mode = get_scan_mode()
+    simulated = mode == "mock"
     try:
-        validate_domain_in_scope(scope.root_domain, scope, resolve=not simulated)
+        if simulated:
+            validate_domain_in_scope(scope.root_domain, scope, resolve=False)
+        else:
+            if scope.local_lab_mode:
+                if not target_url:
+                    raise ScopeError("Local Lab probes require an explicit loopback URL and approved port")
+                validate_real_network_access(scope, target_url, resolve=True)
+            else:
+                validate_real_network_access(scope, scope.root_domain, resolve=True)
     except ScopeError as exc:
         raise LiveHostError(str(exc), 422) from exc
-    adapter = ToolManager(mode=SCAN_MODE).adapters["httpx"]
+    adapter = ToolManager(mode=mode).adapters["httpx"]
     if not simulated and not adapter.detect().get("available"):
         raise LiveHostError("ProjectDiscovery httpx is not installed or is unavailable on PATH", 503)
     with _lock:
@@ -113,21 +126,30 @@ def start_live_host_scan(scope_id: int) -> dict:
             scan_id = cursor.lastrowid
         event = threading.Event()
         _cancellations[scan_id] = event
-        _executor.submit(_run, scan_id, scope, adapter, event, simulated)
+        _executor.submit(_run, scan_id, scope, adapter, event, simulated, target_url)
     return _read_scan(scan_id)
 
 
-def _run(scan_id: int, scope: ScopeRecord, adapter, cancel_event: threading.Event, simulated: bool):
+def _run(scan_id: int, scope: ScopeRecord, adapter, cancel_event: threading.Event, simulated: bool,
+         target_url: str | None = None):
     try:
         _update(scan_id, status="running", stage="validating_scope", progress=0, started_at=_now())
-        validate_domain_in_scope(scope.root_domain, scope, resolve=not simulated)
+        if simulated:
+            validate_domain_in_scope(scope.root_domain, scope, resolve=False)
+        else:
+            if scope.local_lab_mode:
+                validate_real_network_access(scope, target_url or "", resolve=True)
+            else:
+                validate_real_network_access(scope, scope.root_domain, resolve=True)
         if cancel_event.is_set():
             _update(scan_id, status="cancelled", stage="cancelled", finished_at=_now())
             return
         with connect() as db:
             discovered = db.execute("SELECT hostname FROM discovered_subdomains WHERE scope_id = ? AND simulated = 0 ORDER BY hostname LIMIT 1000", (scope.id,)).fetchall()
-        targets = sorted({scope.root_domain, *scope.included_assets, *(row["hostname"] for row in discovered)})
-        targets = [validate_domain_in_scope(host, scope, resolve=not simulated) for host in targets]
+        targets = ([target_url] if scope.local_lab_mode and not simulated else
+                   sorted({scope.root_domain, *scope.included_assets, *(row["hostname"] for row in discovered)}))
+        targets = [validate_domain_in_scope(host, scope, resolve=False) if simulated else
+                   validate_real_network_access(scope, host, resolve=True) for host in targets]
         _update(scan_id, stage="httpx_probe", progress=0)
         if simulated:
             candidates = [{"hostname": "mock." + scope.root_domain, "url": "https://mock." + scope.root_domain,
@@ -183,7 +205,7 @@ def list_live_hosts(scope_id: int | None = None):
                           ((scope_id,) if scope_id else ())).fetchall()
     return {"scans": [get_live_host_scan(row["id"]) for row in scans],
             "results": [dict(row) | {"simulated": bool(row["simulated"])} for row in rows],
-            "tool": ToolManager(mode=SCAN_MODE).adapters["httpx"].detect()}
+            "tool": ToolManager().adapters["httpx"].detect()}
 
 
 def cancel_live_host_scan(scan_id: int):

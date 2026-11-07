@@ -4,9 +4,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from app.config import SCAN_MODE
+from app.core.runtime_settings import get_scan_mode
 from app.core.database import connect
-from app.core.scope_manager import ScopeError, validate_domain_in_scope
+from app.core.scope_manager import ScopeError, validate_domain_in_scope, validate_real_network_access
 from app.models.scope import ScopeRecord
 from app.services.live_host_recon import (cancel_live_host_scan, get_live_host_scan, list_live_hosts,
                                            start_live_host_scan)
@@ -44,9 +44,12 @@ def _now():
 
 def _scope_record(row) -> ScopeRecord:
     return ScopeRecord(id=row["id"], root_domain=row["root_domain"], program_name=row["program_name"],
+                       authorization_reference=row["authorization_reference"], authorization_status=row["authorization_status"],
+                       authorization_verified_by=row["authorization_verified_by"],
+                       authorization_verified_at=datetime.fromisoformat(row["authorization_verified_at"]) if row["authorization_verified_at"] else None,
                        include_subdomains=bool(row["include_subdomains"]), included_assets=json.loads(row["included_assets"]),
                        excluded_subdomains=json.loads(row["excluded_subdomains"]), authorization_notes=row["authorization_notes"],
-                       authorization_confirmed=bool(row["authorization_confirmed"]), local_lab_mode=bool(row["local_lab_mode"]),
+                       authorization_confirmed=bool(row["authorization_confirmed"]), local_lab_mode=bool(row["local_lab_mode"]), local_lab_ports=json.loads(row["local_lab_ports"]),
                        created_at=datetime.fromisoformat(row["created_at"]))
 
 
@@ -88,7 +91,10 @@ def start_reconnaissance(scope_id: int, active_crawl_approved: bool = False) -> 
     if not scope["authorization_confirmed"]:
         raise OrchestrationError("Explicit authorization is required before reconnaissance", 403)
     try:
-        validate_domain_in_scope(scope["root_domain"], _scope_record(scope), resolve=SCAN_MODE != "mock")
+        if get_scan_mode() == "mock":
+            validate_domain_in_scope(scope["root_domain"], _scope_record(scope), resolve=False)
+        else:
+            validate_real_network_access(_scope_record(scope), scope["root_domain"], resolve=True)
     except ScopeError as exc:
         raise OrchestrationError(str(exc), 422) from exc
     with _lock:
@@ -98,7 +104,7 @@ def start_reconnaissance(scope_id: int, active_crawl_approved: bool = False) -> 
             if active or child_active:
                 raise OrchestrationError("A reconnaissance job is already queued or running", 409)
             cursor = db.execute("INSERT INTO orchestration_jobs(scope_id, status, stage, progress, simulated, active_crawl_approved, created_at) VALUES (?, 'queued', 'queued', 0, ?, ?, ?)",
-                                (scope_id, int(SCAN_MODE == "mock"), int(active_crawl_approved), _now()))
+                                (scope_id, int(get_scan_mode() == "mock"), int(active_crawl_approved), _now()))
             job_id = cursor.lastrowid
             db.executemany("INSERT INTO orchestration_stages(job_id, name, status) VALUES (?, ?, 'queued')",
                            [(job_id, name) for name, _, _ in _STAGES])
@@ -165,11 +171,23 @@ def _run_job(job_id: int, scope_id: int, crawl_approved: bool, event: threading.
             scope = db.execute("SELECT * FROM scopes WHERE id = ?", (scope_id,)).fetchone()
         if scope is None or not scope["authorization_confirmed"]:
             raise OrchestrationError("Registered authorization is missing")
-        validate_domain_in_scope(scope["root_domain"], _scope_record(scope), resolve=SCAN_MODE != "mock")
-        _run_child(job_id, scope_id, "subdomains", start_subdomain_scan, event, 0, 20)
+        if get_scan_mode() == "mock":
+            validate_domain_in_scope(scope["root_domain"], _scope_record(scope), resolve=False)
+        else:
+            validate_real_network_access(_scope_record(scope), scope["root_domain"], resolve=True)
+        is_local_lab = bool(scope["local_lab_mode"])
+        if is_local_lab and get_scan_mode() == "real":
+            _update_stage(job_id, "subdomains", status="skipped", error="Passive public source lookups are disabled for local lab scopes")
+            _update_job(job_id, stage="subdomains_skipped_local_lab", progress=20)
+        else:
+            _run_child(job_id, scope_id, "subdomains", start_subdomain_scan, event, 0, 20)
         _run_child(job_id, scope_id, "live_hosts", start_live_host_scan, event, 20, 20)
-        _run_child(job_id, scope_id, "urls", start_url_scan, event, 40, 20)
-        if crawl_approved:
+        if is_local_lab and get_scan_mode() == "real":
+            _update_stage(job_id, "urls", status="skipped", error="External archive lookups are disabled for local lab scopes")
+            _update_job(job_id, stage="urls_skipped_local_lab", progress=60)
+        else:
+            _run_child(job_id, scope_id, "urls", start_url_scan, event, 40, 20)
+        if crawl_approved and not (is_local_lab and get_scan_mode() == "real"):
             target_host = scope["root_domain"]
             with connect() as db:
                 host = db.execute("SELECT hostname FROM live_hosts WHERE scope_id = ? AND simulated = 0 ORDER BY discovered_at DESC LIMIT 1", (scope_id,)).fetchone()
@@ -177,7 +195,8 @@ def _run_job(job_id: int, scope_id: int, crawl_approved: bool, event: threading.
                 target_host = host["hostname"]
             _run_child(job_id, scope_id, "endpoints", None, event, 60, 20, target_host=target_host)
         else:
-            _update_stage(job_id, "endpoints", status="skipped", error="Explicit active-crawl approval was not provided")
+            reason = "Local lab crawling is disabled by the private-IP crawler policy" if is_local_lab and get_scan_mode() == "real" else "Explicit active-crawl approval was not provided"
+            _update_stage(job_id, "endpoints", status="skipped", error=reason)
             _update_job(job_id, stage="endpoints_skipped_no_approval", progress=80)
         _run_child(job_id, scope_id, "technologies", start_technology_scan, event, 80 if crawl_approved else 80, 15)
         if event.is_set():

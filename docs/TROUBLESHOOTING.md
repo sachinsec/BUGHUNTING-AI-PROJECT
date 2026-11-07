@@ -1,29 +1,25 @@
 # Troubleshooting
 
-## `externally-managed-environment` on Kali
+## Tools show MOCK
 
-Run `bash scripts/setup_kali.sh`; packages belong in `.venv`. If virtual environment support is missing, install `python3-full python3-venv` with apt and retry. Do not use `--break-system-packages`.
+Check `/api/system/info` for profile and execution mode. Windows development defaults to visibly simulated MOCK. Choose REAL in Settings to test binary detection; missing tools remain unavailable and do not produce samples. Restart after `.env` changes. Database mode is tied to its profile and reset to the profile default when profiles change.
 
-## `/api/health` reports database unavailable
+## Tool is NOT_INSTALLED or ERROR
 
-Check that `DATABASE_URL` is a SQLite file URL and its parent directory is writable. The default `sqlite:///./data/bughunter.db` resolves from the project root.
+Run the configured executable name as the same user that launches FastAPI. Check PATH and set the corresponding `*_EXECUTABLE` variable, then select Tool Management → Check again or call `POST /api/tools/check`. ERROR means a binary was found but its bounded version check failed.
 
-## Ollama unavailable or model missing
+## httpx is rejected
 
-Run `ollama serve` and `ollama list`. Pull the configured model with `ollama pull qwen3:4b`, then check `OLLAMA_BASE_URL` and `OLLAMA_MODEL`. Missing AI does not prevent backend startup.
+The Python package named `httpx` may provide an unrelated CLI. AI BugHunter accepts ProjectDiscovery version output only. Configure `HTTPX_EXECUTABLE` to the correct executable name and ensure it is available in the backend process PATH.
 
-## A tool is unavailable
+## Ollama unavailable
 
-Run `python scripts/check_environment.py` and ensure the binary is on `PATH`. Verify `httpx` is ProjectDiscovery's CLI, not an unrelated program. Missing binaries remain optional.
+Check `OLLAMA_BASE_URL`, start Ollama, and run `ollama pull qwen3:4b`. `/api/health` returns its connectivity state and setup hint. Startup does not install or launch Ollama.
 
-## Target rejected
+## Authorization or Local Lab is rejected
 
-Check registered root, subdomain inclusion, exclusions, DNS, and public destination addresses. Private, loopback, reserved, link-local, and metadata destinations are blocked. Local lab exceptions are not implemented yet.
+An authorization checkbox in SQLite is not sufficient for public traffic. Record a separate manual review with reviewer and policy URL. Local Lab accepts loopback only and enforces exact configured ports; it rejects public DNS and LAN targets.
 
-## PowerShell script policy
+## Pytest cannot import app
 
-Use `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` for the current terminal, then retry. Alternatively: `powershell -ExecutionPolicy Bypass -File .\scripts\setup_windows.ps1`.
-
-## Mock output appears in development
-
-Mock responses carry `simulated: true`; no requests are made and results are not discovered assets/findings. For Kali production detection, set `APP_ENV=production` and `SCAN_MODE=real` after setup and authorization review.
+From the repository root run `python -m pytest -q` (or the active virtual environment's Python). Kali integration testing must run on Kali; Windows passing tests do not establish Linux compatibility.

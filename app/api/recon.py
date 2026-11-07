@@ -76,7 +76,7 @@ def _translate_live_error(error: LiveHostError) -> HTTPException:
 @router.post("/live-hosts/start", status_code=status.HTTP_202_ACCEPTED)
 def start_live_hosts(payload: LiveHostScanStart):
     try:
-        return start_live_host_scan(payload.scope_id)
+        return start_live_host_scan(payload.scope_id, payload.target_url)
     except LiveHostError as exc:
         raise _translate_live_error(exc) from exc
 

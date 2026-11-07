@@ -75,8 +75,8 @@ def test_parser_deduplicates_sources_and_rejects_out_of_scope_urls():
 
 def test_url_api_persists_labeled_mock_archive_results(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(urls, "SCAN_MODE", "mock")
-    monkeypatch.setattr(urls, "ToolManager", lambda mode: Manager())
+    monkeypatch.setattr(urls, "get_scan_mode", lambda: "mock")
+    monkeypatch.setattr(urls, "ToolManager", lambda mode="mock": Manager())
     with TestClient(app) as client:
         scope = add_scope(client)
         started = client.post("/api/recon/urls/start", json={"scope_id": scope["id"]})
@@ -92,12 +92,15 @@ def test_url_api_persists_labeled_mock_archive_results(tmp_path, monkeypatch):
 
 def test_url_api_requires_registered_scope_and_archive_provider(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(urls, "SCAN_MODE", "real")
-    monkeypatch.setattr(urls, "validate_domain_in_scope", lambda host, *_args, **_kwargs: host)
+    monkeypatch.setattr(urls, "get_scan_mode", lambda: "real")
+    monkeypatch.setattr(urls, "validate_real_network_access", lambda _scope, host, **_kwargs: host)
     monkeypatch.setattr(urls, "ToolManager", lambda mode: Manager(gau_available=False, wayback_available=False))
     with TestClient(app) as client:
         assert client.post("/api/recon/urls/start", json={"scope_id": 123}).status_code == 404
         scope = add_scope(client)
+        assert client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={"verified": True,
+            "verified_by": "test reviewer", "review_notes": "Reviewed archive test authorization",
+            "authorization_reference": "https://program.example/policy"}).status_code == 200
         response = client.post("/api/recon/urls/start", json={"scope_id": scope["id"]})
         assert response.status_code == 503
         assert "GAU and/or Waybackurls" in response.json()["detail"]
@@ -105,8 +108,8 @@ def test_url_api_requires_registered_scope_and_archive_provider(tmp_path, monkey
 
 def test_url_job_cancellation(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(urls, "SCAN_MODE", "real")
-    monkeypatch.setattr(urls, "validate_domain_in_scope", lambda host, *_args, **_kwargs: host)
+    monkeypatch.setattr(urls, "get_scan_mode", lambda: "real")
+    monkeypatch.setattr(urls, "validate_real_network_access", lambda _scope, host, **_kwargs: host)
     started_event, release_event = threading.Event(), threading.Event()
 
     def blocking(*_args):
@@ -118,6 +121,9 @@ def test_url_job_cancellation(tmp_path, monkeypatch):
     try:
         with TestClient(app) as client:
             scope = add_scope(client)
+            assert client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={"verified": True,
+                "verified_by": "test reviewer", "review_notes": "Reviewed archive test authorization",
+                "authorization_reference": "https://program.example/policy"}).status_code == 200
             started = client.post("/api/recon/urls/start", json={"scope_id": scope["id"]})
             assert started.status_code == 202
             assert started_event.wait(1)

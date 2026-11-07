@@ -113,8 +113,8 @@ def test_httpx_adapter_prefers_httpx_toolkit_and_falls_back_to_pd_httpx(monkeypa
 
 def test_live_host_api_persists_simulated_results_with_label(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(live, "SCAN_MODE", "mock")
-    monkeypatch.setattr(live, "ToolManager", lambda mode: Manager(Adapter()))
+    monkeypatch.setattr(live, "get_scan_mode", lambda: "mock")
+    monkeypatch.setattr(live, "ToolManager", lambda mode="mock": Manager(Adapter()))
     with TestClient(app) as client:
         scope = add_scope(client)
         response = client.post("/api/recon/live-hosts/start", json={"scope_id": scope["id"]})
@@ -130,12 +130,15 @@ def test_live_host_api_persists_simulated_results_with_label(tmp_path, monkeypat
 
 def test_live_host_api_rejects_missing_program_and_missing_tool(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(live, "SCAN_MODE", "real")
-    monkeypatch.setattr(live, "validate_domain_in_scope", lambda host, *_args, **_kwargs: host)
+    monkeypatch.setattr(live, "get_scan_mode", lambda: "real")
+    monkeypatch.setattr(live, "validate_real_network_access", lambda _scope, host, **_kwargs: host)
     monkeypatch.setattr(live, "ToolManager", lambda mode: Manager(Adapter(available=False)))
     with TestClient(app) as client:
         assert client.post("/api/recon/live-hosts/start", json={"scope_id": 99}).status_code == 404
         scope = add_scope(client)
+        assert client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={"verified": True,
+            "verified_by": "test reviewer", "review_notes": "Reviewed live host test authorization",
+            "authorization_reference": "https://program.example/policy"}).status_code == 200
         response = client.post("/api/recon/live-hosts/start", json={"scope_id": scope["id"]})
         assert response.status_code == 503
         assert "httpx is not installed" in response.json()["detail"]
@@ -143,8 +146,8 @@ def test_live_host_api_rejects_missing_program_and_missing_tool(tmp_path, monkey
 
 def test_live_host_scan_cancellation(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(live, "SCAN_MODE", "real")
-    monkeypatch.setattr(live, "validate_domain_in_scope", lambda host, *_args, **_kwargs: host)
+    monkeypatch.setattr(live, "get_scan_mode", lambda: "real")
+    monkeypatch.setattr(live, "validate_real_network_access", lambda _scope, host, **_kwargs: host)
     started_event, release_event = threading.Event(), threading.Event()
 
     def slow_probe(_targets, _scope, _event):
@@ -156,6 +159,9 @@ def test_live_host_scan_cancellation(tmp_path, monkeypatch):
     try:
         with TestClient(app) as client:
             scope = add_scope(client)
+            assert client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={"verified": True,
+                "verified_by": "test reviewer", "review_notes": "Reviewed local test authorization",
+                "authorization_reference": "https://program.example/policy"}).status_code == 200
             started = client.post("/api/recon/live-hosts/start", json={"scope_id": scope["id"]})
             assert started.status_code == 202
             assert started_event.wait(1)

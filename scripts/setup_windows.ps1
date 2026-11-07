@@ -8,5 +8,5 @@ if (-not (Test-Path '.venv')) { python -m venv .venv }
 & .\.venv\Scripts\python.exe -m pip install --upgrade pip
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 New-Item -ItemType Directory -Force -Path data, logs, reports | Out-Null
-if (-not (Test-Path '.env')) { Copy-Item '.env.example' '.env' }
+if (-not (Test-Path '.env')) { Copy-Item '.env.windows.example' '.env' }
 Write-Host 'Setup complete. Run .\scripts\start_windows.ps1; no scans are started by setup.'

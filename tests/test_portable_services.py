@@ -18,8 +18,8 @@ def test_relative_sqlite_url_resolves_under_project(monkeypatch):
 
 
 def test_production_mode_cannot_enable_simulated_scan_results():
-    assert config._scan_mode("production", "mock") == "real"
-    assert config._scan_mode("development", "mock") == "mock"
+    assert config._scan_mode("PRODUCTION_KALI", "real") == "real"
+    assert config._scan_mode("DEVELOPMENT_WINDOWS", "mock") == "mock"
 
 
 def test_database_adds_target_metadata_to_existing_scope_table(tmp_path, monkeypatch):

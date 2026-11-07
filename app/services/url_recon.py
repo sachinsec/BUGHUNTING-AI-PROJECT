@@ -3,9 +3,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from app.config import SCAN_MODE
+from app.core.runtime_settings import get_scan_mode
 from app.core.database import connect
-from app.core.scope_manager import ScopeError, validate_domain_in_scope, validate_url_in_scope
+from app.core.scope_manager import ScopeError, validate_domain_in_scope, validate_real_network_access, validate_url_in_scope
 from app.core.redaction import redact_url
 from app.models.scope import ScopeRecord
 from app.services.tool_manager import ToolManager, ToolUnavailable
@@ -33,9 +33,12 @@ def _scope(scope_id: int) -> ScopeRecord:
     if not row["authorization_confirmed"]:
         raise URLReconError("Explicit authorization is required before reconnaissance", 403)
     return ScopeRecord(id=row["id"], root_domain=row["root_domain"], program_name=row["program_name"],
+                       authorization_reference=row["authorization_reference"], authorization_status=row["authorization_status"],
+                       authorization_verified_by=row["authorization_verified_by"],
+                       authorization_verified_at=datetime.fromisoformat(row["authorization_verified_at"]) if row["authorization_verified_at"] else None,
                        include_subdomains=bool(row["include_subdomains"]), included_assets=json.loads(row["included_assets"]),
                        excluded_subdomains=json.loads(row["excluded_subdomains"]), authorization_notes=row["authorization_notes"],
-                       authorization_confirmed=True, local_lab_mode=bool(row["local_lab_mode"]),
+                       authorization_confirmed=True, local_lab_mode=bool(row["local_lab_mode"]), local_lab_ports=json.loads(row["local_lab_ports"]),
                        created_at=datetime.fromisoformat(row["created_at"]))
 
 
@@ -79,12 +82,16 @@ def _scan(scan_id: int):
 
 def start_url_scan(scope_id: int) -> dict:
     scope = _scope(scope_id)
-    simulated = SCAN_MODE == "mock"
+    mode = get_scan_mode()
+    simulated = mode == "mock"
     try:
-        validate_domain_in_scope(scope.root_domain, scope, resolve=not simulated)
+        if simulated:
+            validate_domain_in_scope(scope.root_domain, scope, resolve=False)
+        else:
+            validate_real_network_access(scope, scope.root_domain, resolve=True, allow_local_lab=False)
     except ScopeError as exc:
         raise URLReconError(str(exc), 422) from exc
-    adapters = ToolManager(mode=SCAN_MODE).adapters
+    adapters = ToolManager(mode=mode).adapters
     selected = {name: adapters[name] for name in ("gau", "waybackurls")}
     available = {name: adapter.detect().get("available", False) for name, adapter in selected.items()}
     if not simulated and not any(available.values()):
@@ -106,7 +113,10 @@ def start_url_scan(scope_id: int) -> dict:
 def _run(scan_id: int, scope: ScopeRecord, adapters: dict, available: dict, cancel_event: threading.Event, simulated: bool):
     try:
         _update(scan_id, status="running", stage="validating_scope", progress=0, started_at=_now())
-        validate_domain_in_scope(scope.root_domain, scope, resolve=not simulated)
+        if simulated:
+            validate_domain_in_scope(scope.root_domain, scope, resolve=False)
+        else:
+            validate_real_network_access(scope, scope.root_domain, resolve=True, allow_local_lab=False)
         if cancel_event.is_set():
             _update(scan_id, status="cancelled", stage="cancelled", finished_at=_now())
             return
@@ -177,7 +187,7 @@ def list_historical_urls(scope_id: int | None = None):
     for row in rows:
         key = (row["url"], bool(row["simulated"]))
         grouped.setdefault(key, {"url": row["url"], "sources": [], "simulated": bool(row["simulated"]), "discovered_at": row["discovered_at"]})["sources"].append(row["source"])
-    tools = ToolManager(mode=SCAN_MODE).adapters
+    tools = ToolManager().adapters
     return {"scans": [get_url_scan(row["id"]) for row in scans], "results": list(grouped.values()),
             "tools": {name: tools[name].detect() for name in ("gau", "waybackurls")}}
 

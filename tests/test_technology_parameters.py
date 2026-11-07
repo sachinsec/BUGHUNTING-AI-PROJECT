@@ -60,7 +60,7 @@ def test_whatweb_invocation_disables_redirects_and_aggressive_mode():
 
 def test_technology_api_persists_only_simulated_marked_results(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(technology_recon, "SCAN_MODE", "mock")
+    monkeypatch.setattr(technology_recon, "get_scan_mode", lambda: "mock")
     monkeypatch.setattr(technology_recon, "ToolManager", lambda mode: Manager())
     with TestClient(app) as client:
         scope = add_scope(client)
@@ -78,14 +78,14 @@ def test_technology_api_persists_only_simulated_marked_results(tmp_path, monkeyp
 
 def test_technology_api_rejects_out_of_scope_and_missing_whatweb(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(technology_recon, "SCAN_MODE", "real")
+    monkeypatch.setattr(technology_recon, "get_scan_mode", lambda: "real")
 
     def scope_check(host, scope, **_kwargs):
         if host != scope.root_domain and not host.endswith("." + scope.root_domain):
             raise ScopeError("Target is outside the registered scope")
         return host
 
-    monkeypatch.setattr(technology_recon, "validate_domain_in_scope", scope_check)
+    monkeypatch.setattr(technology_recon, "validate_real_network_access", lambda scope, host, **kwargs: scope_check(host, scope))
     monkeypatch.setattr(technology_recon, "ToolManager", lambda mode: Manager(available=False))
     with TestClient(app) as client:
         scope = add_scope(client)

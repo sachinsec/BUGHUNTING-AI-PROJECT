@@ -3,9 +3,9 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
-from app.config import SCAN_MODE
+from app.core.runtime_settings import get_scan_mode
 from app.core.database import connect
-from app.core.scope_manager import ScopeError, normalize_domain, validate_domain_in_scope
+from app.core.scope_manager import ScopeError, normalize_domain, validate_domain_in_scope, validate_real_network_access
 from app.models.scope import ScopeRecord
 from app.services.tool_manager import ToolManager, ToolUnavailable
 
@@ -33,11 +33,14 @@ def _load_scope(scope_id: int) -> ScopeRecord:
         raise ReconError("Explicit authorization is required before reconnaissance", 403)
     return ScopeRecord(
         id=row["id"], root_domain=row["root_domain"], program_name=row["program_name"],
+        authorization_reference=row["authorization_reference"], authorization_status=row["authorization_status"],
+        authorization_verified_by=row["authorization_verified_by"],
+        authorization_verified_at=datetime.fromisoformat(row["authorization_verified_at"]) if row["authorization_verified_at"] else None,
         include_subdomains=bool(row["include_subdomains"]),
         included_assets=json.loads(row["included_assets"]),
         excluded_subdomains=json.loads(row["excluded_subdomains"]),
         authorization_notes=row["authorization_notes"], authorization_confirmed=True,
-        local_lab_mode=bool(row["local_lab_mode"]), created_at=datetime.fromisoformat(row["created_at"]),
+        local_lab_mode=bool(row["local_lab_mode"]), local_lab_ports=json.loads(row["local_lab_ports"]), created_at=datetime.fromisoformat(row["created_at"]),
     )
 
 
@@ -90,14 +93,18 @@ def _scan_row(scan_id: int):
 
 def start_subdomain_scan(scope_id: int) -> dict:
     scope = _load_scope(scope_id)
-    simulated = SCAN_MODE == "mock"
+    mode = get_scan_mode()
+    simulated = mode == "mock"
     try:
         # Mock mode performs no network lookups; real mode checks every DNS answer before launch.
-        validate_domain_in_scope(scope.root_domain, scope, resolve=not simulated)
+        if simulated:
+            validate_domain_in_scope(scope.root_domain, scope, resolve=False)
+        else:
+            validate_real_network_access(scope, scope.root_domain, resolve=True, allow_local_lab=False)
     except ScopeError as exc:
         raise ReconError(str(exc), 422) from exc
 
-    manager = ToolManager(mode=SCAN_MODE)
+    manager = ToolManager(mode=mode)
     adapter = manager.adapters["subfinder"]
     if not simulated:
         tool = adapter.detect()
@@ -126,7 +133,10 @@ def _run_scan(scan_id: int, scope: ScopeRecord, adapter, cancel_event: threading
             _update_scan(scan_id, status="cancelled", stage="cancelled", finished_at=_now())
             return
         _update_scan(scan_id, status="running", stage="validating_scope", progress=0, started_at=_now())
-        validate_domain_in_scope(scope.root_domain, scope, resolve=not simulated)
+        if simulated:
+            validate_domain_in_scope(scope.root_domain, scope, resolve=False)
+        else:
+            validate_real_network_access(scope, scope.root_domain, resolve=True, allow_local_lab=False)
         if cancel_event.is_set():
             _update_scan(scan_id, status="cancelled", stage="cancelled", finished_at=_now())
             return
@@ -199,7 +209,7 @@ def list_subdomains(scope_id: int | None = None, scan_id: int | None = None) -> 
             "SELECT hostname, MAX(source) AS source, simulated, MAX(discovered_at) AS discovered_at FROM discovered_subdomains" + where +
             " GROUP BY hostname, simulated ORDER BY hostname LIMIT 5000", params,
         ).fetchall()
-    tool = ToolManager(mode=SCAN_MODE).adapters["subfinder"].detect()
+    tool = ToolManager().adapters["subfinder"].detect()
     return {"scans": [get_subdomain_scan(row["id"]) for row in scans],
             "results": [dict(row) | {"simulated": bool(row["simulated"])} for row in rows], "tool": tool}
 

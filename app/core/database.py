@@ -19,7 +19,13 @@ def initialize_database() -> None:
             excluded_subdomains TEXT NOT NULL DEFAULT '[]',
             authorization_notes TEXT NOT NULL,
             authorization_confirmed INTEGER NOT NULL CHECK (authorization_confirmed = 1),
+            authorization_reference TEXT NOT NULL DEFAULT '',
+            authorization_status TEXT NOT NULL DEFAULT 'unverified' CHECK (authorization_status IN ('unverified', 'verified')),
+            authorization_verified_by TEXT,
+            authorization_verified_at TEXT,
+            authorization_review_notes TEXT NOT NULL DEFAULT '',
             local_lab_mode INTEGER NOT NULL DEFAULT 0 CHECK (local_lab_mode IN (0, 1)),
+            local_lab_ports TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL
         );
         CREATE TABLE IF NOT EXISTS recon_scans (
@@ -124,6 +130,11 @@ def initialize_database() -> None:
             UNIQUE(job_id, name)
         );
         CREATE INDEX IF NOT EXISTS idx_orchestration_jobs_scope ON orchestration_jobs(scope_id, id DESC);
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
         """)
         # Additive migrations preserve existing scope rows from earlier versions.
         columns = {row["name"] for row in db.execute("PRAGMA table_info(scopes)")}
@@ -133,6 +144,18 @@ def initialize_database() -> None:
             db.execute("ALTER TABLE scopes ADD COLUMN included_assets TEXT NOT NULL DEFAULT '[]'")
         if "local_lab_mode" not in columns:
             db.execute("ALTER TABLE scopes ADD COLUMN local_lab_mode INTEGER NOT NULL DEFAULT 0")
+        if "authorization_reference" not in columns:
+            db.execute("ALTER TABLE scopes ADD COLUMN authorization_reference TEXT NOT NULL DEFAULT ''")
+        if "authorization_status" not in columns:
+            db.execute("ALTER TABLE scopes ADD COLUMN authorization_status TEXT NOT NULL DEFAULT 'unverified'")
+        if "authorization_verified_by" not in columns:
+            db.execute("ALTER TABLE scopes ADD COLUMN authorization_verified_by TEXT")
+        if "authorization_verified_at" not in columns:
+            db.execute("ALTER TABLE scopes ADD COLUMN authorization_verified_at TEXT")
+        if "authorization_review_notes" not in columns:
+            db.execute("ALTER TABLE scopes ADD COLUMN authorization_review_notes TEXT NOT NULL DEFAULT ''")
+        if "local_lab_ports" not in columns:
+            db.execute("ALTER TABLE scopes ADD COLUMN local_lab_ports TEXT NOT NULL DEFAULT '[]'")
 
 
 @contextmanager

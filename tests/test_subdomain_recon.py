@@ -91,7 +91,9 @@ def test_subfinder_adapter_executes_with_argument_array_and_captures_json(monkey
     import app.services.tool_manager as tool_module
     from app.models.scope import ScopeRecord
 
-    scope = ScopeRecord(id=1, root_domain="example.com", program_name="test", include_subdomains=True,
+    scope = ScopeRecord(id=1, root_domain="example.com", program_name="test", authorization_reference="https://program.example",
+                        authorization_status="verified", authorization_verified_by="test reviewer",
+                        authorization_verified_at="2026-01-01T00:00:00+00:00", include_subdomains=True,
                         included_assets=[], excluded_subdomains=[], authorization_notes="authorized",
                         authorization_confirmed=True, local_lab_mode=False,
                         created_at="2026-01-01T00:00:00+00:00")
@@ -110,7 +112,7 @@ def test_subfinder_adapter_executes_with_argument_array_and_captures_json(monkey
 
     monkeypatch.setattr(shutil, "which", lambda _name: "subfinder")
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
-    monkeypatch.setattr(tool_module, "validate_domain_in_scope", lambda host, *_args, **_kwargs: host)
+    monkeypatch.setattr(tool_module, "validate_real_network_access", lambda _scope, host, **_kwargs: host)
     adapter = SubfinderAdapter()
     adapter.min_interval = 0
     result = adapter.run("example.com", scope)
@@ -124,7 +126,9 @@ def test_subfinder_adapter_terminates_running_process_on_cancel(monkeypatch):
     import app.services.tool_manager as tool_module
     from app.models.scope import ScopeRecord
 
-    scope = ScopeRecord(id=1, root_domain="example.com", program_name="test", include_subdomains=True,
+    scope = ScopeRecord(id=1, root_domain="example.com", program_name="test", authorization_reference="https://program.example",
+                        authorization_status="verified", authorization_verified_by="test reviewer",
+                        authorization_verified_at="2026-01-01T00:00:00+00:00", include_subdomains=True,
                         included_assets=[], excluded_subdomains=[], authorization_notes="authorized",
                         authorization_confirmed=True, local_lab_mode=False,
                         created_at="2026-01-01T00:00:00+00:00")
@@ -142,7 +146,7 @@ def test_subfinder_adapter_terminates_running_process_on_cancel(monkeypatch):
     process = Process()
     monkeypatch.setattr(shutil, "which", lambda _name: "subfinder")
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
-    monkeypatch.setattr(tool_module, "validate_domain_in_scope", lambda host, *_args, **_kwargs: host)
+    monkeypatch.setattr(tool_module, "validate_real_network_access", lambda _scope, host, **_kwargs: host)
     event = threading.Event()
     event.set()
     adapter = SubfinderAdapter()
@@ -170,8 +174,8 @@ def test_scope_dns_resolution_rejects_private_answers(monkeypatch):
 
 def test_api_scan_persists_simulated_results_and_history(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(recon, "SCAN_MODE", "mock")
-    monkeypatch.setattr(recon, "ToolManager", lambda mode: FakeManager(mode))
+    monkeypatch.setattr(recon, "get_scan_mode", lambda: "mock")
+    monkeypatch.setattr(recon, "ToolManager", lambda mode="mock": FakeManager(mode))
     with TestClient(app) as client:
         scope = create_scope(client)
         started = client.post("/api/recon/subdomains/start", json={"scope_id": scope["id"]})
@@ -193,8 +197,12 @@ def test_api_rejects_unknown_program_and_reports_missing_tool(tmp_path, monkeypa
         missing = client.post("/api/recon/subdomains/start", json={"scope_id": 1234})
         assert missing.status_code == 404
         scope = create_scope(client)
-        monkeypatch.setattr(recon, "SCAN_MODE", "real")
-        monkeypatch.setattr(recon, "validate_domain_in_scope", lambda *_args, **_kwargs: "example.test")
+        monkeypatch.setattr(recon, "get_scan_mode", lambda: "real")
+        monkeypatch.setattr(recon, "validate_real_network_access", lambda _scope, host, **_kwargs: host)
+        verified = client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={
+            "verified": True, "verified_by": "test reviewer", "review_notes": "Reviewed test program scope",
+            "authorization_reference": "https://program.example/policy"})
+        assert verified.status_code == 200
 
         class MissingManager:
             def __init__(self, mode):
@@ -208,7 +216,7 @@ def test_api_rejects_unknown_program_and_reports_missing_tool(tmp_path, monkeypa
 
 def test_cancellation_marks_running_job_cancelled(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(recon, "SCAN_MODE", "mock")
+    monkeypatch.setattr(recon, "get_scan_mode", lambda: "mock")
     started_event, release_event = threading.Event(), threading.Event()
 
     def slow_result(target, _scope, _cancel_event):
@@ -234,7 +242,7 @@ def test_cancellation_marks_running_job_cancelled(tmp_path, monkeypatch):
 
 def test_scan_errors_are_sanitized_and_scope_filter_never_returns_external_hosts(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(recon, "SCAN_MODE", "mock")
+    monkeypatch.setattr(recon, "get_scan_mode", lambda: "mock")
 
     def error_result(*_args):
         raise RuntimeError("provider token=supersecret")

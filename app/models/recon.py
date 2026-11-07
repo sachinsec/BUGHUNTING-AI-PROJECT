@@ -38,6 +38,7 @@ class SubdomainScanList(BaseModel):
 
 class LiveHostScanStart(BaseModel):
     scope_id: int = Field(gt=0)
+    target_url: str | None = Field(default=None, min_length=8, max_length=2048)
 
 
 class LiveHostResult(BaseModel):

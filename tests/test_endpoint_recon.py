@@ -78,8 +78,8 @@ def test_katana_parser_scope_filters_deduplicates_and_redacts_secrets():
 
 def test_endpoint_api_requires_active_crawl_approval(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(endpoints, "SCAN_MODE", "mock")
-    monkeypatch.setattr(endpoints, "ToolManager", lambda mode: Manager())
+    monkeypatch.setattr(endpoints, "get_scan_mode", lambda: "mock")
+    monkeypatch.setattr(endpoints, "ToolManager", lambda mode="mock": Manager())
     with TestClient(app) as client:
         scope = add_scope(client)
         response = client.post("/api/recon/endpoints/start", json={"scope_id": scope["id"],
@@ -90,8 +90,8 @@ def test_endpoint_api_requires_active_crawl_approval(tmp_path, monkeypatch):
 
 def test_endpoint_mock_scan_persists_labeled_and_redacted_result(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(endpoints, "SCAN_MODE", "mock")
-    monkeypatch.setattr(endpoints, "ToolManager", lambda mode: Manager())
+    monkeypatch.setattr(endpoints, "get_scan_mode", lambda: "mock")
+    monkeypatch.setattr(endpoints, "ToolManager", lambda mode="mock": Manager())
     with TestClient(app) as client:
         scope = add_scope(client)
         response = client.post("/api/recon/endpoints/start", json={"scope_id": scope["id"],
@@ -107,15 +107,18 @@ def test_endpoint_mock_scan_persists_labeled_and_redacted_result(tmp_path, monke
 
 def test_endpoint_scan_rejects_out_of_scope_and_missing_katana(tmp_path, monkeypatch):
     setup_database(tmp_path, monkeypatch)
-    monkeypatch.setattr(endpoints, "SCAN_MODE", "real")
+    monkeypatch.setattr(endpoints, "get_scan_mode", lambda: "real")
     def check_scope(host, scope, **_kwargs):
         if host != scope.root_domain and not host.endswith("." + scope.root_domain):
             raise endpoints.ScopeError("Target is outside the registered scope")
         return host
-    monkeypatch.setattr(endpoints, "validate_domain_in_scope", check_scope)
+    monkeypatch.setattr(endpoints, "validate_real_network_access", lambda scope, host, **kwargs: check_scope(host, scope))
     monkeypatch.setattr(endpoints, "ToolManager", lambda mode: Manager(Adapter(available=False)))
     with TestClient(app) as client:
         scope = add_scope(client)
+        assert client.post(f"/api/scopes/{scope['id']}/verify-authorization", json={"verified": True,
+            "verified_by": "test reviewer", "review_notes": "Reviewed crawl test authorization",
+            "authorization_reference": "https://program.example/policy"}).status_code == 200
         out = client.post("/api/recon/endpoints/start", json={"scope_id": scope["id"], "target_host": "outside.test", "approval_confirmed": True})
         assert out.status_code == 422
         missing = client.post("/api/recon/endpoints/start", json={"scope_id": scope["id"], "target_host": "example.test", "approval_confirmed": True})

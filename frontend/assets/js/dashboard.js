@@ -111,15 +111,58 @@
     byId("target-empty").classList.add("hidden");
     body.innerHTML = filtered.map((scope) => {
       const assets = scope.included_assets.length + (scope.include_subdomains ? 1 : 0);
+      const auth = scope.local_lab_mode ? '<span class="mode-pill lab">LOCAL ONLY</span>' : (scope.authorization_status === "verified" ? '<span class="real-badge">VERIFIED</span>' : `<button class="button button-secondary button-small" data-verify-scope="${scope.id}">Review authorization</button>`);
       return `<tr>
         <td><div class="table-program"><span class="program-mark">${escapeText((scope.program_name || scope.root_domain).slice(0, 1).toUpperCase())}</span><span><strong>${escapeText(scope.program_name || scope.root_domain)}</strong><small>${escapeText(scope.root_domain)}</small></span></div></td>
         <td><span class="asset-count">${assets}<small> ${scope.include_subdomains ? "incl. subdomains" : "explicit assets"}</small></span></td>
         <td><span class="asset-count">${scope.excluded_subdomains.length}</span></td>
         <td><span class="mode-pill${scope.local_lab_mode ? " lab" : ""}">${scope.local_lab_mode ? "LOCAL LAB" : "AUTHORIZED"}</span></td>
-        <td>${dateLabel(scope.created_at)}</td>
+        <td>${auth}<small class="table-subline">${dateLabel(scope.created_at)}</small></td>
         <td><div class="row-actions"><button class="delete-button" data-delete-scope="${scope.id}" aria-label="Delete ${escapeText(scope.program_name || scope.root_domain)}" title="Remove scope">×</button></div></td>
       </tr>`;
     }).join("");
+  }
+
+  async function renderToolManagement() {
+    const content = byId("placeholder-content");
+    content.innerHTML = '<article class="panel"><div class="panel-heading"><div><div class="panel-kicker">LOCAL EXECUTION</div><h2>Security tool detection</h2></div><button class="button button-secondary" id="tool-check">Check again</button></div><div class="table-scroll"><table><thead><tr><th>TOOL</th><th>STATE</th><th>MODE</th><th>VERSION</th><th>EXECUTABLE</th></tr></thead><tbody id="tool-status-body"><tr><td colspan="5" class="table-loading">Checking installed tools…</td></tr></tbody></table></div></article>';
+    const load = async (check = false) => {
+      const data = check ? await BugHunterApi.checkTools() : await BugHunterApi.toolStatus();
+      const rows = data.tools || [];
+      byId("tool-status-body").innerHTML = rows.map((tool) => `<tr><td>${escapeText(tool.name)}</td><td><span class="${tool.status === "INSTALLED" ? "real-badge" : tool.status === "MOCK" ? "simulation-badge" : "mode-pill"}">${escapeText(tool.status || (tool.available ? "INSTALLED" : "NOT_INSTALLED"))}</span></td><td>${escapeText((tool.mode || data.execution_mode).toUpperCase())}</td><td>${escapeText(tool.version || "—")}</td><td class="hostname-cell">${escapeText(tool.path || tool.install_hint || "—")}</td></tr>`).join("");
+    };
+    byId("tool-check").addEventListener("click", () => load(true).catch((error) => toast(error.message, true)));
+    try { await load(); } catch (error) { content.insertAdjacentHTML("beforeend", `<p class="recon-alert error">${escapeText(error.message)}</p>`); }
+  }
+
+  async function renderSettings() {
+    const content = byId("placeholder-content");
+    content.innerHTML = '<article class="panel"><div class="panel-heading"><div><div class="panel-kicker">RUNTIME CONFIGURATION</div><h2>Execution mode</h2></div></div><div id="settings-details" class="loading-line"><span></span>Loading runtime settings…</div></article>';
+    try {
+      const [settings, info] = await Promise.all([BugHunterApi.settings(), BugHunterApi.systemInfo()]);
+      const warning = settings.scan_mode === "mock" ? '<div class="scope-notice"><strong>MOCK MODE ACTIVE</strong><p>All generated observations are simulated and must not be treated as findings.</p></div>' : settings.scan_mode === "local_lab" ? '<div class="scope-notice"><strong>LOCAL_LAB MODE ACTIVE</strong><p>Only registered loopback scopes and their exact approved ports can be scanned.</p></div>' : '';
+      byId("settings-details").innerHTML = `${warning}<p>Profile: <strong>${escapeText(info.profile)}</strong> · Platform: <strong>${escapeText(info.platform)}</strong></p><label class="field-label" for="scan-mode-select">Tool execution mode</label><select id="scan-mode-select">${settings.allowed_modes.map((mode) => `<option value="${mode}" ${settings.scan_mode === mode ? "selected" : ""}>${mode.toUpperCase()}</option>`).join("")}</select><p class="field-help">REAL mode never falls back to simulation. Missing tools produce an explicit unavailable state.</p><div id="settings-save-state" role="status"></div>`;
+      byId("scan-mode-select").addEventListener("change", async (event) => {
+        event.target.disabled = true;
+        try { await BugHunterApi.setScanMode(event.target.value); toast("Execution mode saved."); await refreshHealth(); await renderSettings(); }
+        catch (error) { toast(error.message, true); event.target.value = settings.scan_mode; event.target.disabled = false; }
+      });
+    } catch (error) { byId("settings-details").textContent = `Settings unavailable: ${error.message}`; }
+  }
+
+  async function reviewAuthorization(id) {
+    const scope = state.scopes.find((item) => String(item.id) === String(id));
+    if (!scope || scope.local_lab_mode) return;
+    const verifiedBy = window.prompt("Reviewer name (required):");
+    if (!verifiedBy) return;
+    const reviewNotes = window.prompt("Record how you verified the program policy and permitted assets (required):");
+    if (!reviewNotes || reviewNotes.trim().length < 10) { toast("Review notes must contain at least 10 characters.", true); return; }
+    if (!window.confirm(`Confirm that ${scope.root_domain} is currently authorized for testing under the recorded program policy?`)) return;
+    try {
+      await BugHunterApi.verifyAuthorization(id, { verified: true, verified_by: verifiedBy, review_notes: reviewNotes });
+      toast("Authorization review recorded.");
+      await refreshScopes();
+    } catch (error) { toast(error.message, true); }
   }
 
   function renderReconPrograms() {
@@ -351,6 +394,7 @@
     const scopeId = byId("recon-scope-select").value;
     const selected = state.scopes.find((item) => String(item.id) === String(scopeId));
     let extra = "";
+    if (module === "live-hosts" && selected?.local_lab_mode) extra = `<input class="host-input" id="lab-target-url" aria-label="Approved local lab URL" placeholder="http://localhost:8080"><small class="field-help">Use an exact loopback URL with a port configured on this program.</small>`;
     if (module === "endpoints") extra = `<input class="host-input" id="endpoint-host-input" aria-label="Authorized application hostname" value="${escapeText(selected?.root_domain || "")}" placeholder="app.example.com"><label class="approval-option"><input type="checkbox" id="endpoint-approval"><span>I approve active crawling for this target.</span></label>`;
     if (module === "reconnaissance") extra = '<label class="approval-option"><input type="checkbox" id="pipeline-crawl-approval"><span>Include active Katana crawl</span></label>';
     const action = module === "parameters" ? "Refresh parameters" : module === "reconnaissance" ? "Start full reconnaissance" : module === "endpoints" ? "Start approved crawl" : `Start ${config.title.toLowerCase()}`;
@@ -368,7 +412,7 @@
       let scan;
       if (module === "reconnaissance") scan = await BugHunterApi.startRecon(Number(scopeId), Boolean(byId("pipeline-crawl-approval")?.checked));
       else if (module === "subdomains") scan = await BugHunterApi.startSubdomainScan(Number(scopeId));
-      else if (module === "live-hosts") scan = await BugHunterApi.startLiveHosts(Number(scopeId));
+      else if (module === "live-hosts") scan = await BugHunterApi.startLiveHosts(Number(scopeId), byId("lab-target-url")?.value.trim() || undefined);
       else if (module === "url-intelligence") scan = await BugHunterApi.startHistoricalUrls(Number(scopeId));
       else if (module === "endpoints") scan = await BugHunterApi.startEndpoints(Number(scopeId), byId("endpoint-host-input").value.trim(), Boolean(byId("endpoint-approval").checked));
       else if (module === "technologies") scan = await BugHunterApi.startTechnologies(Number(scopeId));
@@ -435,8 +479,10 @@
     const pill = byId("api-status");
     try {
       const health = await BugHunterApi.health();
+      const system = await BugHunterApi.systemInfo();
       pill.classList.remove("is-error", "is-loading");
-      pill.innerHTML = '<span class="status-dot"></span><span>API connected</span>';
+      pill.innerHTML = `<span class="status-dot"></span><span>API · ${escapeText(system.platform)} · ${escapeText(system.execution_mode.toUpperCase())}</span>`;
+      byId("mock-mode-banner").classList.toggle("hidden", system.execution_mode !== "mock");
       setStatus(byId("backend-state"), "OPERATIONAL");
       const ai = health.ai === "connected" ? "AVAILABLE" : health.ai === "connected_model_missing" ? "MODEL MISSING" : "UNAVAILABLE";
       setStatus(byId("ollama-state"), ai, health.ai === "connected" ? "ok" : "error");
@@ -478,8 +524,12 @@
     } else if (view !== "overview") {
       byId("placeholder-title").textContent = data[1];
       byId("placeholder-description").textContent = data[2];
-      byId("coming-title").textContent = `${data[1]} API is not connected`;
-      byId("coming-description").textContent = `The current backend does not expose ${data[1].toLowerCase()} data or actions yet. This section will use live API results when its module is implemented.`;
+      if (view === "tool-management") renderToolManagement();
+      else if (view === "settings") renderSettings();
+      else {
+        byId("coming-title").textContent = `${data[1]} API is not connected`;
+        byId("coming-description").textContent = `The current backend does not expose ${data[1].toLowerCase()} data or actions yet. This section will use live API results when its module is implemented.`;
+      }
     }
     closeSidebar();
   }
@@ -488,6 +538,7 @@
     byId("form-error").classList.add("hidden");
     byId("target-form").reset();
     byId("target-form").elements.include_subdomains.checked = true;
+    byId("lab-ports-row").classList.add("hidden");
     byId("target-modal").classList.remove("hidden");
     byId("root-domain").focus();
   }
@@ -516,7 +567,9 @@
       excluded_subdomains: splitAssets(values.get("excluded_subdomains")),
       include_subdomains: values.has("include_subdomains"),
       local_lab_mode: values.has("local_lab_mode"),
+      local_lab_ports: splitAssets(values.get("local_lab_ports") || "").map((port) => Number(port)),
       authorization_notes: values.get("authorization_notes").trim(),
+      authorization_reference: values.get("authorization_reference").trim(),
       authorization_confirmed: values.has("authorization_confirmed"),
     };
     const submit = byId("submit-target");
@@ -559,6 +612,7 @@
     ["add-target-button", "target-add-button", "empty-add-target"].forEach((id) => byId(id).addEventListener("click", openModal));
     ["modal-close", "modal-cancel"].forEach((id) => byId(id).addEventListener("click", closeModal));
     byId("target-form").addEventListener("submit", submitTarget);
+    byId("target-form").elements.local_lab_mode.addEventListener("change", (event) => byId("lab-ports-row").classList.toggle("hidden", !event.target.checked));
     byId("recon-controls").addEventListener("change", (event) => {
       if (event.target.id === "recon-scope-select") loadRecon();
     });
@@ -572,6 +626,8 @@
     byId("target-table-body").addEventListener("click", (event) => {
       const button = event.target.closest("[data-delete-scope]");
       if (button) deleteScope(button.dataset.deleteScope);
+      const review = event.target.closest("[data-verify-scope]");
+      if (review) reviewAuthorization(review.dataset.verifyScope);
     });
     ["refresh-button", "target-refresh-button"].forEach((id) => byId(id).addEventListener("click", () => Promise.all([refreshScopes(), refreshHealth()])));
     byId("docs-button").addEventListener("click", () => window.open("/docs", "_blank", "noopener"));

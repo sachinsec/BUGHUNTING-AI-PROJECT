@@ -8,11 +8,13 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes import router
 from app.api.recon import router as recon_router
 from app.core.database import initialize_database
+from app.core.runtime_settings import initialize_runtime_settings
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     initialize_database()
+    initialize_runtime_settings()
     yield
 
 
