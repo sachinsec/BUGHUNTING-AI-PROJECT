@@ -137,8 +137,10 @@ def _run_child(job_id: int, scope_id: int, module: str, start, event: threading.
             child = start_technology_scan(scope_id)
         else:
             child = start(scope_id)
-    except Exception:
-        _update_stage(job_id, module, status="failed", error=f"{module.replace('_', ' ')} could not start", finished_at=_now())
+    except Exception as exc:
+        detail = str(exc).strip() if getattr(exc, "status_code", None) is not None else ""
+        error = detail or f"{module.replace('_', ' ')} could not start"
+        _update_stage(job_id, module, status="failed", error=error[:300], finished_at=_now())
         raise
     child_id = child["id"]
     _update_job(job_id, current_child_scan_id=child_id)
@@ -212,7 +214,15 @@ def _run_job(job_id: int, scope_id: int, crawl_approved: bool, event: threading.
     except ScopeError as exc:
         _update_job(job_id, status="failed", stage="scope_validation_failed", error=str(exc)[:300], finished_at=_now())
     except Exception:
-        _update_job(job_id, status="failed", stage="failed", error="Reconnaissance workflow failed; inspect individual stage statuses", finished_at=_now())
+        with connect() as db:
+            failed_stage = db.execute(
+                "SELECT name, error FROM orchestration_stages WHERE job_id = ? AND status = 'failed' ORDER BY id DESC LIMIT 1",
+                (job_id,),
+            ).fetchone()
+        error = (f"{failed_stage['name'].replace('_', ' ')}: {failed_stage['error']}"
+                 if failed_stage and failed_stage["error"] else
+                 "Reconnaissance workflow failed; inspect individual stage statuses")
+        _update_job(job_id, status="failed", stage="failed", error=error[:300], finished_at=_now())
     finally:
         with _lock:
             _cancellations.pop(job_id, None)

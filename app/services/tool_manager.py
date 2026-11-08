@@ -266,12 +266,12 @@ class HttpxAdapter(SubprocessToolAdapter):
     def run_many(self, targets: list[str], scope, cancel_event=None) -> dict:
         """Probe approved targets against pre-resolved public IPs; do not follow redirects."""
         import ipaddress
-        import json
         import shutil
         import socket
         import subprocess
 
         inputs = []
+        allowed_addresses = set()
         for target in dict.fromkeys(targets):
             accepted = validate_real_network_access(scope, target, resolve=False)
             from urllib.parse import urlsplit
@@ -288,9 +288,9 @@ class HttpxAdapter(SubprocessToolAdapter):
                     raise ValueError("Local Lab targets must resolve exclusively to loopback addresses")
             elif not addresses or any(not address.is_global for address in addresses):
                 raise ValueError("A destination resolved to a private or reserved address")
-            for address in sorted(addresses, key=lambda item: (item.version, int(item))):
-                target_url = accepted if "://" in accepted else f"https://{hostname}"
-                inputs.append(json.dumps({"target": target_url, "ip": str(address)}))
+            target_url = accepted if "://" in accepted else f"https://{hostname}"
+            inputs.append(target_url)
+            allowed_addresses.update(str(address) for address in addresses)
         if not inputs:
             return {"returncode": 0, "stdout": "", "mode": "real", "simulated": False}
         detected = self.detect()
@@ -299,8 +299,9 @@ class HttpxAdapter(SubprocessToolAdapter):
         binary = detected.get("path") or self._resolved_path or shutil.which(self.executable)
         if not binary:
             raise ToolUnavailable("ProjectDiscovery httpx is not installed")
-        argv = [binary, "-l", "-", "-j", "-silent", "-sc", "-title", "-ct", "-rl", "2",
-                "-timeout", "10", "-retries", "1", "-duc"]
+        argv = [binary, "-l", "-", "-allow", ",".join(sorted(allowed_addresses)), "-pa",
+                "-j", "-silent", "-sc", "-title", "-ct", "-rl", "2", "-timeout", "10",
+                "-retries", "1", "-duc"]
         if cancel_event is not None and cancel_event.is_set():
             return {"cancelled": True, "returncode": None, "stdout": "", "mode": "real", "simulated": False}
         try:
