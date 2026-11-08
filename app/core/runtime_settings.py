@@ -23,7 +23,7 @@ def initialize_runtime_settings() -> None:
         # or silently retain a real-mode operator choice from a different profile.
         if profile_row is None or profile_row["value"] != APP_PROFILE or row is None:
             mode = DEFAULT_SCAN_MODE
-            db.execute("INSERT INTO app_settings(key, value, updated_at) VALUES ('scan_mode', ?, strftime('%Y-%m-%dT%H:%M:%fZ','now'))", (mode,))
+            db.execute("INSERT INTO app_settings(key, value, updated_at) VALUES ('scan_mode', ?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at", (mode,))
             db.execute("INSERT INTO app_settings(key, value, updated_at) VALUES ('app_profile', ?, strftime('%Y-%m-%dT%H:%M:%fZ','now')) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at", (APP_PROFILE,))
         else:
             mode = row["value"]
