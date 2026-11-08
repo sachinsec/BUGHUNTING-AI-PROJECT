@@ -37,6 +37,7 @@
     createVulnerability: (data) => request("/api/vulnerabilities", { method: "POST", body: JSON.stringify(data) }),
     updateVulnerability: (id, data) => request(`/api/vulnerabilities/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(data) }),
     vulnerabilityStats: () => request("/api/vulnerabilities/stats"),
+    vulnerabilityTechniques: () => request("/api/vulnerabilities/techniques"),
     deleteScope: (id) => request(`/api/scopes/${encodeURIComponent(id)}`, { method: "DELETE" }),
     subdomains: (scopeId) => request(scoped("/api/recon/subdomains", scopeId)),
     subdomainScan: (scanId) => request(`/api/recon/subdomains/${encodeURIComponent(scanId)}`),

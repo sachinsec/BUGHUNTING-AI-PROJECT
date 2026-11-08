@@ -7,9 +7,16 @@ from fastapi import APIRouter, HTTPException, Query
 from app.core.database import connect
 from app.core.runtime_settings import get_scan_mode
 from app.models.vulnerability import FindingCreate, FindingRecord, FindingStatusUpdate
+from app.services.web_test_catalog import get_web_test_catalog
 
 router = APIRouter(tags=["vulnerabilities"])
 _SEVERITIES = ("INFO", "LOW", "MEDIUM", "HIGH", "CRITICAL")
+
+
+@router.get("/techniques")
+def list_web_testing_techniques():
+    """Return the built-in, non-destructive web security review catalog."""
+    return {"source": "web-application-security-review", "categories": get_web_test_catalog()}
 
 
 def _record(row) -> FindingRecord:
