@@ -27,8 +27,6 @@ from app.services.technology_recon import (TechnologyReconError, cancel_technolo
 from app.models.recon import ReconOrchestrationStart
 from app.services.recon_orchestrator import (OrchestrationError, cancel_reconnaissance_job,
     get_reconnaissance_job, list_reconnaissance_jobs, start_reconnaissance)
-from app.models.recon import URLScanStart
-from app.services.url_recon import URLReconError, cancel_url_scan, get_url_scan, list_historical_urls, start_url_scan
 
 router = APIRouter()
 
@@ -249,39 +247,3 @@ def cancel_reconnaissance(job_id: int):
         return cancel_reconnaissance_job(job_id)
     except OrchestrationError as exc:
         raise _translate_orchestration_error(exc) from exc
-
-
-def _translate_url_error(error: URLReconError) -> HTTPException:
-    return HTTPException(status_code=error.status_code, detail=str(error))
-
-
-@router.post("/urls/start", status_code=status.HTTP_202_ACCEPTED)
-def start_urls(payload: URLScanStart):
-    try:
-        return start_url_scan(payload.scope_id)
-    except URLReconError as exc:
-        raise _translate_url_error(exc) from exc
-
-
-@router.get("/urls")
-def historical_urls(scope_id: int | None = Query(default=None, gt=0)):
-    try:
-        return list_historical_urls(scope_id)
-    except URLReconError as exc:
-        raise _translate_url_error(exc) from exc
-
-
-@router.get("/urls/{scan_id}")
-def url_scan(scan_id: int):
-    try:
-        return get_url_scan(scan_id)
-    except URLReconError as exc:
-        raise _translate_url_error(exc) from exc
-
-
-@router.post("/urls/{scan_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
-def cancel_urls(scan_id: int):
-    try:
-        return cancel_url_scan(scan_id)
-    except URLReconError as exc:
-        raise _translate_url_error(exc) from exc

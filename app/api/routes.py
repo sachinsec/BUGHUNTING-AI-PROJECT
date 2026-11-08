@@ -160,8 +160,13 @@ def create_authorization_review(scope_id: int, payload: AuthorizationReviewCreat
         root = scope["root_domain"]
         if any(item != root and not item.endswith("." + root) for item in [asset, *excluded]):
             raise HTTPException(status_code=422, detail="Authorized and excluded assets must be within the registered root")
-        parsed = urlsplit(payload.policy_url)
-        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+        try:
+            parsed = urlsplit(payload.policy_url)
+            policy_hostname = parsed.hostname
+            _policy_port = parsed.port
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="A valid HTTPS program policy URL is required") from exc
+        if parsed.scheme != "https" or not policy_hostname or parsed.username or parsed.password:
             raise HTTPException(status_code=422, detail="A valid HTTPS program policy URL is required")
         now = datetime.now(timezone.utc).isoformat()
         expires_at = payload.expires_at

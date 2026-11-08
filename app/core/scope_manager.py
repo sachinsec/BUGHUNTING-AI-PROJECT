@@ -95,22 +95,27 @@ def validate_domain_in_scope(domain: str, scope: ScopeRecord, resolve: bool = Tr
 
 
 def validate_url_in_scope(url: str, scope: ScopeRecord, resolve: bool = True) -> str:
-    parsed = urlsplit(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username or parsed.password:
+    try:
+        parsed = urlsplit(url)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError as exc:
+        raise ScopeError("Enter a valid HTTP(S) URL with a valid destination port") from exc
+    if parsed.scheme not in {"http", "https"} or not hostname or parsed.username or parsed.password:
         raise ScopeError("Only HTTP(S) URLs without embedded credentials are supported")
     if scope.local_lab_mode:
-        if parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        if hostname not in {"localhost", "127.0.0.1", "::1"}:
             raise ScopeError("Local Lab only permits explicit loopback hosts")
         allowed_ports = set(getattr(scope, "local_lab_ports", []))
-        if parsed.port is None or parsed.port not in allowed_ports:
+        if port is None or port not in allowed_ports:
             raise ScopeError("Local Lab URL must use an explicitly configured port")
-        if parsed.hostname not in {scope.root_domain, *getattr(scope, "included_assets", [])}:
+        if hostname not in {scope.root_domain, *getattr(scope, "included_assets", [])}:
             raise ScopeError("Local Lab URL host is outside its explicitly configured hosts")
-        validate_lab_destination(parsed.hostname, resolve=resolve)
+        validate_lab_destination(hostname, resolve=resolve)
         return url
-    if parsed.port not in {None, 80, 443}:
+    if port not in {None, 80, 443}:
         raise ScopeError("Nonstandard destination ports are blocked")
-    validate_domain_in_scope(parsed.hostname, scope, resolve=resolve)
+    validate_domain_in_scope(hostname, scope, resolve=resolve)
     return url
 
 
