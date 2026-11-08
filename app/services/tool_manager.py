@@ -299,7 +299,9 @@ class HttpxAdapter(SubprocessToolAdapter):
         binary = detected.get("path") or self._resolved_path or shutil.which(self.executable)
         if not binary:
             raise ToolUnavailable("ProjectDiscovery httpx is not installed")
-        argv = [binary, "-l", "-", "-allow", ",".join(sorted(allowed_addresses)), "-pa",
+        # httpx reads newline-delimited targets from stdin by default. `-l` expects
+        # a filename, so `-l -` can be treated as a literal file path on some builds.
+        argv = [binary, "-allow", ",".join(sorted(allowed_addresses)), "-pa",
                 "-j", "-silent", "-sc", "-title", "-ct", "-rl", "2", "-timeout", "10",
                 "-retries", "1", "-duc"]
         if cancel_event is not None and cancel_event.is_set():

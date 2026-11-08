@@ -1,5 +1,7 @@
 import json
 import ipaddress
+import logging
+import re
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -15,6 +17,7 @@ from app.services.tool_manager import ToolManager, ToolUnavailable
 _executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="httpx-probe")
 _lock = threading.Lock()
 _cancellations: dict[int, threading.Event] = {}
+_logger = logging.getLogger("uvicorn.error")
 
 
 class LiveHostError(RuntimeError):
@@ -25,6 +28,13 @@ class LiveHostError(RuntimeError):
 
 def _now():
     return datetime.now(timezone.utc).isoformat()
+
+
+def _brief_tool_error(value: str | None) -> str:
+    """Keep command-line diagnostics readable and bounded in scan records."""
+    clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", value or "")
+    clean = "".join(char for char in clean if char.isprintable() or char in "\t\n\r")
+    return " ".join(clean.split())[:220]
 
 
 def _load_scope(scope_id: int) -> ScopeRecord:
@@ -178,7 +188,12 @@ def _run(scan_id: int, scope: ScopeRecord, adapter, cancel_event: threading.Even
             if result.get("timed_out"):
                 raise TimeoutError
             if result.get("returncode") != 0:
-                raise RuntimeError("httpx process failed")
+                status = result.get("returncode")
+                detail = _brief_tool_error(result.get("stderr"))
+                message = f"ProjectDiscovery httpx exited with status {status}"
+                if detail:
+                    message += f": {detail}"
+                raise RuntimeError(message)
             _update(scan_id, stage="processing_results", progress=0)
             candidates, _rejected = parse_httpx_output(result.get("stdout", ""), scope, require_approved=True)
         if cancel_event.is_set():
@@ -196,8 +211,11 @@ def _run(scan_id: int, scope: ScopeRecord, adapter, cancel_event: threading.Even
         _update(scan_id, status="failed", stage="tool_unavailable", error="ProjectDiscovery httpx is unavailable", finished_at=_now())
     except TimeoutError:
         _update(scan_id, status="failed", stage="timed_out", error="HTTP probing exceeded the configured timeout", finished_at=_now())
-    except Exception:
-        _update(scan_id, status="failed", stage="failed", error="Live-host probing failed; inspect local application logs", finished_at=_now())
+    except Exception as exc:
+        _logger.exception("Live-host probing failed for scan %s", scan_id)
+        detail = str(exc).strip() or type(exc).__name__
+        _update(scan_id, status="failed", stage="failed",
+                error=f"{type(exc).__name__}: {detail}"[:300], finished_at=_now())
     finally:
         with _lock:
             _cancellations.pop(scan_id, None)
